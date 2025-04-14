@@ -1,8 +1,10 @@
 streamlit
 pandas
-PyMuPDF # fitz
+PyMuPDF==1.23.7 # Specifying version for consistency
 python-docx
 nltk
 tiktoken
 
-#trigger
+# Additional dependencies for stability
+certifi
+charset-normalizer
