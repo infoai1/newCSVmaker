@@ -4,10 +4,35 @@ import re
 import nltk
 import io
 import logging
+import os
 from typing import List, Tuple, Dict, Any, Optional
 
 # Configure logging (use the same configuration as utils or configure separately)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# --- NLTK Check ---
+def ensure_nltk_punkt_available():
+    """
+    Verifies punkt is available before processing.
+    This is a local copy of the check from utils.py as a safeguard.
+    """
+    try:
+        nltk.data.find('tokenizers/punkt')
+        return True
+    except LookupError:
+        logging.error("NLTK punkt not found in file_processor. This should have been downloaded earlier.")
+        # Try one more emergency download attempt
+        try:
+            nltk_data_dir = os.path.join(os.path.expanduser('~'), 'nltk_data')
+            os.makedirs(nltk_data_dir, exist_ok=True)
+            nltk.data.path.append(nltk_data_dir)
+            nltk.download('punkt', download_dir=nltk_data_dir)
+            nltk.data.find('tokenizers/punkt')  # Verify
+            logging.info("Emergency download of punkt successful.")
+            return True
+        except Exception as e:
+            logging.error(f"Emergency punkt download failed: {e}")
+            return False
 
 # --- Cleaning Rules ---
 def is_likely_metadata_or_footer(text: str, block_bbox: Optional[Tuple[float, float, float, float]] = None, page_height: Optional[float] = None) -> bool:
@@ -104,6 +129,10 @@ def _process_pdf(
     extracted_data = []
     current_chapter_title = None
     doc = None # Initialize doc to None for finally block
+    
+    # First ensure NLTK punkt is available before processing
+    if not ensure_nltk_punkt_available():
+        raise RuntimeError("NLTK 'punkt' tokenizer data not found or couldn't be downloaded. Processing cannot continue.")
 
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -213,6 +242,10 @@ def _process_docx(
     """Extracts structured sentences from a DOCX file."""
     extracted_data = []
     current_chapter_title = None
+    
+    # First ensure NLTK punkt is available before processing
+    if not ensure_nltk_punkt_available():
+        raise RuntimeError("NLTK 'punkt' tokenizer data not found or couldn't be downloaded. Processing cannot continue.")
 
     try:
         document = docx.Document(file_bytes)
