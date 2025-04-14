@@ -7,7 +7,7 @@ import logging
 from typing import List, Tuple, Dict, Any, Optional
 
 # Configure logging (use the same configuration as utils or configure separately)
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Cleaning Rules (Keep as before) ---
 def is_likely_metadata_or_footer(text: str, block_bbox: Optional[Tuple[float, float, float, float]] = None, page_height: Optional[float] = None) -> bool:
