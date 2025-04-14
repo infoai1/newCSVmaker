@@ -230,8 +230,14 @@ def _process_docx(
                 style_info['italic'] = bool(first_run.italic)
 
             layout_info = {'centered': False, 'alone': True} # Assume alone
-            if para.alignment and hasattr(para.alignment, 'name') and 'CENTER' in para.alignment.name:
-                layout_info['centered'] = True
+            # Check alignment for centered text
+            try:
+                # Accessing alignment can sometimes fail depending on docx structure/library version nuances
+                if para.alignment and hasattr(para.alignment, 'name') and 'CENTER' in para.alignment.name:
+                    layout_info['centered'] = True
+            except Exception as align_err:
+                 logging.warning(f"Could not determine paragraph alignment for '{text[:30]}...': {align_err}")
+
 
             # Check if paragraph is a heading
             if check_heading_user_defined(text, style_info, layout_info, heading_criteria):
@@ -279,9 +285,15 @@ def extract_sentences_with_structure(
     Reads PDF or DOCX file content, extracts text, detects headings based on criteria,
     and returns a list of (sentence, page/para_marker, detected_chapter_title).
     """
-    file_extension = filename.split('.')[-1].lower()
+    file_extension = ""
+    try:
+        file_extension = filename.split('.')[-1].lower()
+    except IndexError:
+        raise ValueError("Could not determine file extension from filename.")
+
     file_bytes = io.BytesIO(file_content)
-    heading_criteria = heading_criteria or {} # Use default empty dict if None
+    # Ensure heading_criteria is always a dict, even if None is passed
+    heading_criteria = heading_criteria if heading_criteria is not None else {}
 
     if file_extension == 'pdf':
         logging.info(f"Processing PDF: {filename}")
