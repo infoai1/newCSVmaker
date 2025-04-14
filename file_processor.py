@@ -189,7 +189,12 @@ def _process_docx(
 
 
 # --- Main Extraction Function (Keep as before) ---
-def extract_sentences_with_structure(
+# file_processor.py (Relevant Section)
+
+# ... (previous functions like _process_pdf, _process_docx) ...
+
+# --- Main Extraction Function ---
+def extract_sentences_with_structure(  # Line 192 - Should have NO leading whitespace
     file_content: bytes,
     filename: str,
     pdf_skip_start: int = 0,
@@ -197,19 +202,19 @@ def extract_sentences_with_structure(
     pdf_first_page_offset: int = 1,
     heading_criteria: Dict[str, Any] = None
 ) -> List[Tuple[str, str, Optional[str]]]:
-    """
+    """                            # Line 200 - Should be indented (e.g., 4 spaces)
     Reads PDF or DOCX file content, extracts text, detects headings based on criteria,
     and returns a list of (sentence, page/para_marker, detected_chapter_title).
-    """
-    file_extension = filename.split('.')[-1].lower()
-    file_bytes = io.BytesIO(file_content)
-    heading_criteria = heading_criteria or {}
-
-    if file_extension == 'pdf':
-        logging.info(f"Processing PDF: {filename}")
-        return _process_pdf(file_bytes, pdf_skip_start, pdf_skip_end, pdf_first_page_offset, heading_criteria)
-    elif file_extension == 'docx':
-        logging.info(f"Processing DOCX: {filename}")
-        return _process_docx(file_bytes, heading_criteria)
-    else:
-        raise ValueError(f"Unsupported file type: '{file_extension}'. Please upload PDF or DOCX.")
+    """                            # Line 203 - Should be indented
+    file_extension = filename.split('.')[-1].lower() # Line 204 - Should be indented (same level as docstring)
+    file_bytes = io.BytesIO(file_content)            # Line 205 - Should be indented
+    heading_criteria = heading_criteria or {}        # Line 206 - Should be indented
+                                                     # Line 207 - Blank line (indent doesn't matter)
+    if file_extension == 'pdf':                      # Line 208 - Should be indented
+        logging.info(f"Processing PDF: {filename}")  # Line 209 - Should be indented FURTHER (e.g., 8 spaces)
+        return _process_pdf(file_bytes, pdf_skip_start, pdf_skip_end, pdf_first_page_offset, heading_criteria) # Line 210 - Indented FURTHER
+    elif file_extension == 'docx':                   # Line 211 - Should be indented (same level as 'if' on 208)
+        logging.info(f"Processing DOCX: {filename}") # Line 212 - Should be indented FURTHER
+        return _process_docx(file_bytes, heading_criteria) # Line 213 - Indented FURTHER
+    else:                                            # Line 214 - Should be indented (same level as 'if' on 208)
+        raise ValueError(f"Unsupported file type: '{file_extension}'. Please upload PDF or DOCX.") # Line 215 - Indented FURTHER
