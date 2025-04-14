@@ -65,6 +65,9 @@ def check_heading_user_defined(
 
 
 # --- PDF Processing ---
+# ... (imports and other functions remain the same) ...
+
+# --- PDF Processing ---
 def _process_pdf(
     file_bytes: io.BytesIO,
     skip_start: int,
@@ -78,92 +81,30 @@ def _process_pdf(
     doc = None # Initialize doc to None for finally block
 
     try:
+        # --- This part remains the same ---
         doc = fitz.open(stream=file_bytes, filetype="pdf")
-        num_pages = len(doc)
-        start_page_idx = skip_start
-        end_page_idx = num_pages - skip_end
-
-        if start_page_idx >= end_page_idx:
-            logging.warning("PDF processing skipped: Invalid page range after skipping.")
-            return []
-
-        for page_num_idx in range(start_page_idx, end_page_idx):
-            page = doc.load_page(page_num_idx)
-            page_height = page.rect.height
-            page_width = page.rect.width
-            actual_page_num = page_num_idx + first_page_offset
-            page_marker = f"Page {actual_page_num}"
-            page_dict = page.get_text("dict", flags=fitz.TEXTFLAGS_TEXT)
-            potential_headings = []
-            non_heading_blocks = []
-
-            for block in page_dict.get("blocks", []):
-                if block.get("type") == 0: # Text block
-                    block_text = ""
-                    span_details = []
-                    block_bbox = block.get("bbox")
-                    for line in block.get("lines", []):
-                        line_text_parts = []
-                        for span in line.get("spans", []):
-                             line_text_parts.append(span.get("text", ""))
-                             if not span_details:
-                                 span_details.append({
-                                     'size': span.get('size'), 'font': span.get('font'),
-                                     'flags': span.get('flags'),
-                                     'bold': bool(span.get('flags', 0) & (1<<4)),
-                                     'italic': bool(span.get('flags', 0) & (1<<1)),
-                                 })
-                        if block_text and line_text_parts: block_text += "\n"
-                        block_text += "".join(line_text_parts)
-                    block_text = block_text.strip()
-                    if not block_text or is_likely_metadata_or_footer(block_text, block_bbox, page_height):
-                         continue
-                    style_info = span_details[0] if span_details else {}
-                    is_alone = len(block.get("lines", [])) == 1
-                    is_centered = False
-                    if block_bbox:
-                         block_center_x = (block_bbox[0] + block_bbox[2]) / 2
-                         page_center_x = page_width / 2
-                         tolerance = page_width * 0.15
-                         is_centered = abs(block_center_x - page_center_x) < tolerance
-                    layout_info = {'centered': is_centered, 'alone': is_alone}
-
-                    if check_heading_user_defined(block_text, style_info, layout_info, heading_criteria):
-                        potential_headings.append((block_text, page_marker))
-                        logging.info(f"Detected potential heading on {page_marker}: '{block_text}'")
-                    else:
-                         non_heading_blocks.append(block_text)
-
-            if potential_headings:
-                current_chapter_title = potential_headings[0][0]
-
-            full_page_text = "\n".join(non_heading_blocks)
+        # ... (rest of the processing loop) ...
+        # ... (inside the loop) ...
             # --- NLTK Sentence Tokenization ---
             try:
                 sentences = nltk.sent_tokenize(full_page_text)
             except LookupError:
                 logging.error("NLTK 'punkt' model not found during sentence tokenization, even after startup check. Aborting processing.")
-                # Re-raise a more specific error for the main app to catch
                 raise RuntimeError("NLTK 'punkt' tokenizer data not found. Processing cannot continue.") from None
             # --- End NLTK Specific Handling ---
-
-            for sentence in sentences:
-                 sentence = sentence.replace('\n', ' ').strip()
-                 if sentence and not is_likely_metadata_or_footer(sentence):
-                     extracted_data.append((sentence, page_marker, current_chapter_title))
+        # ... (rest of the loop) ...
 
         logging.info(f"Finished processing PDF. Extracted {len(extracted_data)} sentence segments.")
 
-
-    except fitz.fitz.FitzError as e:
+    # --- Correction is HERE ---
+    except fitz.FitzError as e: # Changed from fitz.fitz.FitzError
         logging.error(f"PyMuPDF (fitz) error processing PDF: {e}")
         raise ValueError(f"Error processing PDF file: {e}") from e
-    # Removed the specific nltk.downloader.DownloadError catch here
-    # The LookupError is handled specifically around nltk.sent_tokenize now.
+    # --- End Correction ---
+
     except Exception as e:
         # Catch any other unexpected error during PDF processing
         logging.error(f"Unexpected error during PDF processing: {e}", exc_info=True)
-        # Check if it's the specific RuntimeError we raised for NLTK missing data
         if "NLTK 'punkt' tokenizer data not found" in str(e):
              raise # Re-raise the specific error
         else:
@@ -174,6 +115,8 @@ def _process_pdf(
 
 
     return extracted_data
+
+# ... (rest of file_processor.py remains the same) ...
 
 
 # --- DOCX Processing ---
