@@ -2,7 +2,7 @@ import nltk
 import tiktoken
 import streamlit as st
 import logging
-import os # Needed for potential path checks, though not used in final version
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -15,7 +15,7 @@ def ensure_nltk_punkt():
         # Check if 'punkt' is available locally
         nltk.data.find('tokenizers/punkt')
         logging.info("NLTK 'punkt' tokenizer already available.")
-    except LookupError: # <--- Corrected Exception Type
+    except LookupError: # Correct Exception Type
         st.warning("NLTK 'punkt' tokenizer not found. Attempting download...")
         logging.warning("NLTK 'punkt' tokenizer not found. Attempting download...")
         try:
