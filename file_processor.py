@@ -19,10 +19,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 # --------------------------------------------------
 
 def _ensure_punkt() -> None:
-    try:
-        nltk.data.find("tokenizers/punkt")
-    except LookupError:
-        nltk.download("punkt", quiet=True)
+    """Guarantee both 'punkt' and Streamlit‑specific 'punkt_tab' are present."""
+    for resource in ("punkt", "punkt_tab"):
+        try:
+            nltk.data.find(f"tokenizers/{resource}")
+        except LookupError:
+            nltk.download(resource, quiet=True)
 
 # --------------------------------------------------
 # Glyph normalisation
