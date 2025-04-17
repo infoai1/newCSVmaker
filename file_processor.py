@@ -4,70 +4,162 @@ import re
 import nltk
 import io
 import logging
-import os
+import statistics
+from typing import List, Tuple, Dict, Optional, Any
+
 import streamlit as st
-from typing import List, Tuple, Dict, Any, Optional
 
 # --------------------------------------------------
-# Logging setup
+# Logging
 # --------------------------------------------------
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # --------------------------------------------------
-# NLTK: ensure 'punkt' is available (re‑uses earlier helper)
+# NLTK – ensure punkt
 # --------------------------------------------------
 
-def ensure_nltk_punkt_available() -> bool:
-    """Ensure that the NLTK punkt tokenizer is installed (safeguard)."""
+def _ensure_punkt() -> None:
     try:
-        nltk.data.find('tokenizers/punkt')
-        return True
+        nltk.data.find("tokenizers/punkt")
     except LookupError:
-        logging.warning("NLTK punkt not found, trying to download…")
-        try:
-            nltk.download('punkt', quiet=True)
-            nltk.data.find('tokenizers/punkt')
-            logging.info("Downloaded punkt successfully.")
-            return True
-        except Exception as e:
-            logging.error("Failed to download punkt: %s", e)
-            return False
+        nltk.download("punkt", quiet=True)
 
 # --------------------------------------------------
-#  ███╗   ██╗ █████╗ ██████╗  ██████╗ ██╗     ██╗███████╗
-#  ████╗  ██║██╔══██╗██╔══██╗██╔═══██╗██║     ██║██╔════╝
-#  ██╔██╗ ██║███████║██████╔╝██║   ██║██║     ██║█████╗  
-#  ██║╚██╗██║██╔══██║██╔══██╗██║   ██║██║     ██║██╔══╝  
-#  ██║ ╚████║██║  ██║██║  ██║╚██████╔╝███████╗██║███████╗
-#  ╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝╚══════╝
+# Glyph normalisation
 # --------------------------------------------------
-#  UTILITY:  Glyph‑normalisation fixes bad PDF encodings
-# --------------------------------------------------
+GLYPH_MAP_BASE: Dict[str, str] = {
+    # broken small‑caps → normal
+    "!e ": "The ", "!E ": "THE ", "#e ": "The ", "#E ": "THE ",
+    # ligatures
+    "ﬂ": "fl", "ﬁ": "fi", "ﬀ": "ff", "ﬃ": "ffi", "ﬄ": "ffl",
+}
 
-def _normalise_glyphs(text: str) -> str:
-    """Replace problematic glyphs produced by missing / wrong ToUnicode CMaps.
 
-    This fixes headings where fancy small‑cap 'T' appears as '!' or '#', and
-    converts common ligatures to simple ASCII. Extend `GLYPH_MAP` as needed.
-    """
-    GLYPH_MAP = {
-        "!e ": "The ",   # '!e Creation' -> 'The Creation'
-        "!E ": "THE ",
-        "#e ": "The ",
-        "#E ": "THE ",
-        "ﬂ": "fl",      # ligatures
-        "ﬁ": "fi",
-        "ﬀ": "ff",
-        "ﬃ": "ffi",
-        "ﬄ": "ffl",
-    }
-    for bad, good in GLYPH_MAP.items():
+def normalise_glyphs(text: str, extra_map: Optional[Dict[str, str]] = None) -> str:
+    """Return *text* after applying GLYPH_MAP_BASE plus *extra_map* overrides."""
+    glyph_map = GLYPH_MAP_BASE.copy()
+    if extra_map:
+        glyph_map.update(extra_map)
+    for bad, good in glyph_map.items():
         text = text.replace(bad, good)
     return text
 
 # --------------------------------------------------
-#  CORE: extract sentences with structural info
+# Heading classifier helper
+# --------------------------------------------------
+
+def _qualifies(text: str, *, criteria: Dict[str, Any]) -> bool:
+    """Check a line against the active heading criteria."""
+    # regex / keyword
+    if criteria.get("check_pattern") and criteria.get("pattern_regex"):
+        if not criteria["pattern_regex"].search(text):
+            return False
+
+    # word‑count
+    if criteria.get("check_word_count"):
+        wc = len(text.split())
+        if not (criteria["word_count_min"] <= wc <= criteria["word_count_max"]):
+            return False
+
+    # case
+    if criteria.get("check_case"):
+        if criteria.get("case_upper") and not text.isupper():
+            return False
+        if criteria.get("case_title") and not text.istitle():
+            return False
+
+    return True
+
+# --------------------------------------------------
+# PDF extraction helper
+# --------------------------------------------------
+
+def _extract_pdf(
+    *,
+    data: bytes,
+    skip_start: int,
+    skip_end: int,
+    first_page_offset: int,
+    heading_criteria: Dict[str, Any],
+    extra_glyphs: Dict[str, str],
+) -> List[Tuple[str, str, Optional[str]]]:
+
+    doc = fitz.open(stream=data, filetype="pdf")
+
+    # --- determine adaptive font threshold if font‑size check is ON ---
+    adaptive_min_size = None
+    if heading_criteria.get("check_font_size"):
+        sizes: List[float] = []
+        for pno in range(doc.page_count):
+            for span in doc.load_page(pno).get_text("dict", flags=fitz.TEXTFLAGS_TEXT)["blocks"]:
+                if span["type"] == 0:
+                    for line in span["lines"]:
+                        for sp in line["spans"]:
+                            sizes.append(sp["size"])
+        if sizes:
+            avg = statistics.mean(sizes)
+            sd = statistics.pstdev(sizes) or 1.0
+            adaptive_min_size = avg + sd * 0.5  # ½ σ above average counts as heading
+            logging.info("Adaptive font threshold ≈ %.1f pt", adaptive_min_size)
+
+    def bigger_font(size: float) -> bool:
+        if not heading_criteria.get("check_font_size"):
+            return True
+        return size >= (adaptive_min_size or heading_criteria["font_size_min"])
+
+    results: List[Tuple[str, str, Optional[str]]] = []
+
+    for page_no in range(skip_start, doc.page_count - skip_end):
+        page = doc.load_page(page_no)
+        text_dict = page.get_text("dict", flags=fitz.TEXTFLAGS_TEXT)
+
+        for blk in text_dict["blocks"]:
+            if blk["type"] != 0:
+                continue
+
+            # join text of the block into one string (keeps headings intact)
+            blk_text = "\n".join(sp["text"] for line in blk["lines"] for sp in line["spans"])
+            blk_text = normalise_glyphs(blk_text, extra_map=extra_glyphs)
+
+            # pick the *largest* span size in the block for quick heading guess
+            max_span_size = max(sp["size"] for line in blk["lines"] for sp in line["spans"])
+
+            sentences = nltk.sent_tokenize(blk_text)
+            for sent in sentences:
+                sent = sent.strip()
+                if not sent:
+                    continue
+                marker = f"p{page_no + first_page_offset}"
+                heading = sent if (bigger_font(max_span_size) and _qualifies(sent, criteria=heading_criteria)) else None
+                results.append((sent, marker, heading))
+
+    doc.close()
+    return results
+
+# --------------------------------------------------
+# DOCX extraction helper
+# --------------------------------------------------
+
+def _extract_docx(
+    *,
+    data: bytes,
+    heading_criteria: Dict[str, Any],
+    extra_glyphs: Dict[str, str],
+) -> List[Tuple[str, str, Optional[str]]]:
+    doc = docx.Document(io.BytesIO(data))
+    out: List[Tuple[str, str, Optional[str]]] = []
+
+    for idx, para in enumerate(doc.paragraphs, 1):
+        text = normalise_glyphs(para.text.strip(), extra_map=extra_glyphs)
+        if not text:
+            continue
+        marker = f"para{idx}"
+        heading = text if _qualifies(text, criteria=heading_criteria) else None
+        out.append((text, marker, heading))
+    return out
+
+# --------------------------------------------------
+# Public API function
 # --------------------------------------------------
 
 def extract_sentences_with_structure(
@@ -78,119 +170,28 @@ def extract_sentences_with_structure(
     pdf_skip_end: int = 0,
     pdf_first_page_offset: int = 1,
     heading_criteria: Dict[str, Any],
-    subtitle_criteria: Dict[str, Any]
+    subtitle_criteria: Dict[str, Any] = None,
+    extra_glyphs: Dict[str, str] = None,
 ) -> List[Tuple[str, str, Optional[str]]]:
-    """Return list of (sentence, marker, detected_heading) tuples.
+    """Return (sentence, marker, heading_or_None) list for either PDF or DOCX."""
 
-    * `marker` is `pX` for PDF page number (adjusted by offset) or para idx for DOCX.
-    * `detected_heading` is a string if the sentence qualifies as a heading; else None.
-    """
+    _ensure_punkt()
+    extra_glyphs = extra_glyphs or {}
 
-    if not ensure_nltk_punkt_available():
-        raise RuntimeError("NLTK punkt model unavailable; cannot tokenise.")
-
-    if filename.lower().endswith(".pdf"):
-        return _extract_from_pdf(bytes_data=file_content,
-                                 skip_start=pdf_skip_start,
-                                 skip_end=pdf_skip_end,
-                                 first_page_offset=pdf_first_page_offset,
-                                 heading_criteria=heading_criteria,
-                                 subtitle_criteria=subtitle_criteria)
-    elif filename.lower().endswith(".docx"):
-        return _extract_from_docx(bytes_data=file_content,
-                                  heading_criteria=heading_criteria,
-                                  subtitle_criteria=subtitle_criteria)
-    else:
-        raise ValueError("Unsupported file type: {}".format(filename))
-
-# --------------------------------------------------
-#  PDF helper
-# --------------------------------------------------
-
-def _extract_from_pdf(*, bytes_data: bytes, skip_start: int, skip_end: int, first_page_offset: int,
-                      heading_criteria: Dict[str, Any], subtitle_criteria: Dict[str, Any]
-                      ) -> List[Tuple[str, str, Optional[str]]]:
-    doc = fitz.open(stream=bytes_data, filetype="pdf")
-    page_count = doc.page_count
-    start = skip_start
-    end = page_count - skip_end
-
-    structured: List[Tuple[str, str, Optional[str]]] = []
-
-    for page_number in range(start, end):
-        page = doc.load_page(page_number)
-        textpage = page.get_text("dict", flags=fitz.TEXTFLAGS_TEXT)
-
-        # Combine block lines into paragraphs
-        for block in textpage.get("blocks", []):
-            if block["type"] != 0:
-                continue  # skip images etc.
-            block_text = "\n".join(line["spans"][0]["text"] for line in block["lines"] if line["spans"])
-
-            # glyph normalisation (critical!)
-            block_text = _normalise_glyphs(block_text)
-
-            # sentence split
-            sentences = nltk.sent_tokenize(block_text)
-
-            for sent in sentences:
-                sent_clean = sent.strip()
-                if not sent_clean:
-                    continue
-                marker = f"p{page_number + first_page_offset}"
-                heading = _classify_heading(sent_clean, heading_criteria)
-                structured.append((sent_clean, marker, heading))
-
-    doc.close()
-    return structured
-
-# --------------------------------------------------
-#  DOCX helper
-# --------------------------------------------------
-
-def _extract_from_docx(*, bytes_data: bytes, heading_criteria: Dict[str, Any],
-                       subtitle_criteria: Dict[str, Any]) -> List[Tuple[str, str, Optional[str]]]:
-    file_like = io.BytesIO(bytes_data)
-    document = docx.Document(file_like)
-
-    structured: List[Tuple[str, str, Optional[str]]] = []
-
-    for idx, para in enumerate(document.paragraphs, start=1):
-        text = _normalise_glyphs(para.text.strip())
-        if not text:
-            continue
-        marker = f"para{idx}"
-        heading = _classify_heading(text, heading_criteria)
-        structured.append((text, marker, heading))
-
-    return structured
-
-# --------------------------------------------------
-#  Heading classifier helper
-# --------------------------------------------------
-
-def _classify_heading(text: str, criteria: Dict[str, Any]) -> Optional[str]:
-    """Return the text as heading if it passes ALL active criteria, else None."""
-
-    # 1. Pattern / keyword
-    if criteria.get('check_pattern') and criteria.get('pattern_regex'):
-        if not criteria['pattern_regex'].search(text):
-            return None
-
-    # 2. Word count
-    if criteria.get('check_word_count'):
-        wc = len(text.split())
-        if not (criteria['word_count_min'] <= wc <= criteria['word_count_max']):
-            return None
-
-    # 3. Case checks
-    if criteria.get('check_case'):
-        if criteria.get('case_upper') and not text.isupper():
-            return None
-        if criteria.get('case_title') and not text.istitle():
-            return None
-
-    # Font‑size / style / layout checks are PDF‑only and need span info; skipped here.
-    # They should already have been evaluated in the block‑level extraction step if enabled.
-
-    return text  # passes all active filters
+    ext = filename.lower().rsplit(".", 1)[-1]
+    if ext == "pdf":
+        return _extract_pdf(
+            data=file_content,
+            skip_start=pdf_skip_start,
+            skip_end=pdf_skip_end,
+            first_page_offset=pdf_first_page_offset,
+            heading_criteria=heading_criteria,
+            extra_glyphs=extra_glyphs,
+        )
+    if ext == "docx":
+        return _extract_docx(
+            data=file_content,
+            heading_criteria=heading_criteria,
+            extra_glyphs=extra_glyphs,
+        )
+    raise ValueError("Unsupported file type: " + filename)
