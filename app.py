@@ -107,7 +107,6 @@ with st.sidebar:
             with col2:
                 check_word_count = st.checkbox("Enable Word Count Checks?", value=True, key="check_word_count") # Often useful
                 check_pattern = st.checkbox("Enable Keyword/Pattern Check?", value=True, key="check_pattern") # Often useful
-                check_font_size = st.checkbox("Enable Font Size Check?", value=True, key="check_font_size") # New option for font size
 
             # --- Specific Criteria (disabled based on master toggle) ---
             st.markdown("---")
@@ -133,15 +132,6 @@ with st.sidebar:
                 word_count_min = st.number_input("Min Words", min_value=1, value=1, step=1, disabled=not check_word_count, key="wc_min")
                 word_count_max = st.number_input("Max Words", min_value=1, value=10, step=1, disabled=not check_word_count, key="wc_max") # Low default, adjust as needed
 
-            # New font size criteria
-            st.markdown("---")
-            st.markdown("**Font Size**")
-            c5, c6 = st.columns(2)
-            with c5:
-                font_size_min = st.number_input("Min Font Size", min_value=8, value=14, step=1, disabled=not check_font_size, key="font_size_min")
-            with c6:
-                font_size_max = st.number_input("Max Font Size", min_value=8, value=22, step=1, disabled=not check_font_size, key="font_size_max")
-
             st.markdown("---")
             st.markdown("**Keyword/Pattern**")
             pattern_regex_str = st.text_input("Regex Pattern (Case Insensitive)", value=DEFAULT_REGEX, disabled=not check_pattern, help="Python regex pattern to match the start of the heading text.", key="pattern_str")
@@ -161,72 +151,7 @@ with st.sidebar:
                  is_regex_valid = False # Treat empty pattern as invalid if check is enabled
             else:
                  is_regex_valid = True # Valid if check is disabled
-        
-        # --- Subtitle Style Definition ---
-        st.subheader("Define Subtitle Style", help="Configure how subtitles are identified.")
-        with st.expander("Subtitle Style Criteria", expanded=False):
-            # Master toggles for subtitle
-            col1, col2 = st.columns(2)
-            with col1:
-                sub_check_style = st.checkbox("Enable Font Style Checks?", value=False, key="sub_check_style")
-                sub_check_case = st.checkbox("Enable Text Case Checks?", value=True, key="sub_check_case")
-                sub_check_layout = st.checkbox("Enable Layout Checks?", value=False, key="sub_check_layout")
-            with col2:
-                sub_check_word_count = st.checkbox("Enable Word Count Checks?", value=True, key="sub_check_word_count")
-                sub_check_pattern = st.checkbox("Enable Keyword/Pattern Check?", value=False, key="sub_check_pattern")
-                sub_check_font_size = st.checkbox("Enable Font Size Check?", value=True, key="sub_check_font_size")
 
-            # Subtitle specific criteria
-            st.markdown("---")
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("**Font Style**")
-                sub_style_bold = st.checkbox("Must be Bold?", value=True, disabled=not sub_check_style, key="sub_style_bold")
-                sub_style_italic = st.checkbox("Must be Italic?", value=False, disabled=not sub_check_style, key="sub_style_italic")
-            with c2:
-                st.markdown("**Layout**")
-                sub_layout_centered = st.checkbox("Centered (Approx)?", value=False, disabled=not sub_check_layout, key="sub_layout_centered")
-                sub_layout_alone = st.checkbox("Alone in Block (PDF)?", value=True, disabled=not sub_check_layout, key="sub_layout_alone")
-
-            st.markdown("---")
-            c3, c4 = st.columns(2)
-            with c3:
-                st.markdown("**Text Case**")
-                sub_case_title = st.checkbox("Title Case?", value=True, disabled=not sub_check_case, key="sub_case_title")
-                sub_case_upper = st.checkbox("ALL CAPS?", value=False, disabled=not sub_check_case, key="sub_case_upper")
-            with c4:
-                st.markdown("**Word Count**")
-                sub_word_count_min = st.number_input("Min Words", min_value=1, value=2, step=1, disabled=not sub_check_word_count, key="sub_wc_min")
-                sub_word_count_max = st.number_input("Max Words", min_value=1, value=15, step=1, disabled=not sub_check_word_count, key="sub_wc_max")
-
-            # Subtitle font size criteria
-            st.markdown("---")
-            st.markdown("**Font Size**")
-            c5, c6 = st.columns(2)
-            with c5:
-                sub_font_size_min = st.number_input("Min Font Size", min_value=8, value=12, step=1, disabled=not sub_check_font_size, key="sub_font_size_min")
-            with c6:
-                sub_font_size_max = st.number_input("Max Font Size", min_value=8, value=16, step=1, disabled=not sub_check_font_size, key="sub_font_size_max")
-
-            st.markdown("---")
-            st.markdown("**Keyword/Pattern**")
-            sub_pattern_regex_str = st.text_input("Regex Pattern (Case Insensitive)", value=r"^(SUB|SECTION)", disabled=not sub_check_pattern, help="Python regex pattern to match the start of subtitle text.", key="sub_pattern_str")
-            # Validate subtitle regex
-            sub_pattern_regex = None
-            is_sub_regex_valid = False
-            if sub_check_pattern and sub_pattern_regex_str:
-                try:
-                    sub_pattern_regex = re.compile(sub_pattern_regex_str, re.IGNORECASE)
-                    st.caption("✅ Subtitle regex pattern is valid.")
-                    is_sub_regex_valid = True
-                except re.error as e:
-                    st.caption(f"⚠️ Invalid Subtitle Regex: {e}")
-                    is_sub_regex_valid = False
-            elif sub_check_pattern and not sub_pattern_regex_str:
-                st.caption("⚠️ Subtitle pattern check enabled, but pattern is empty.")
-                is_sub_regex_valid = False
-            else:
-                is_sub_regex_valid = True
 
         # --- Chunking Method ---
         st.subheader("Chunking Strategy")
@@ -244,7 +169,7 @@ with st.sidebar:
         # --- Process Button ---
         st.markdown("---")
         # Disable button if regex is required but invalid
-        process_button_disabled = (check_pattern and not is_regex_valid) or (sub_check_pattern and not is_sub_regex_valid)
+        process_button_disabled = (check_pattern and not is_regex_valid)
         if process_button_disabled:
              st.warning("Cannot process: Fix the invalid or empty Regex pattern first.")
 
@@ -295,30 +220,6 @@ if process_button:
     current_wc_max = st.session_state.wc_max
     current_check_pattern = st.session_state.check_pattern
     current_pattern_str = st.session_state.pattern_str
-    # New font size criteria
-    current_check_font_size = st.session_state.check_font_size
-    current_font_size_min = st.session_state.font_size_min
-    current_font_size_max = st.session_state.font_size_max
-    
-    # Subtitle criteria
-    current_sub_check_style = st.session_state.sub_check_style
-    current_sub_style_bold = st.session_state.sub_style_bold
-    current_sub_style_italic = st.session_state.sub_style_italic
-    current_sub_check_case = st.session_state.sub_check_case
-    current_sub_case_title = st.session_state.sub_case_title
-    current_sub_case_upper = st.session_state.sub_case_upper
-    current_sub_check_layout = st.session_state.sub_check_layout
-    current_sub_layout_centered = st.session_state.sub_layout_centered
-    current_sub_layout_alone = st.session_state.sub_layout_alone
-    current_sub_check_word_count = st.session_state.sub_check_word_count
-    current_sub_wc_min = st.session_state.sub_wc_min
-    current_sub_wc_max = st.session_state.sub_wc_max
-    current_sub_check_pattern = st.session_state.sub_check_pattern
-    current_sub_pattern_str = st.session_state.sub_pattern_str
-    current_sub_check_font_size = st.session_state.sub_check_font_size
-    current_sub_font_size_min = st.session_state.sub_font_size_min
-    current_sub_font_size_max = st.session_state.sub_font_size_max
-    
     # Re-compile regex based on current string value if needed
     current_pattern_regex = None
     if current_check_pattern and current_pattern_str:
@@ -327,15 +228,6 @@ if process_button:
          except re.error:
               # This check should have disabled the button, but double-check
               st.error("Processing stopped due to invalid regex pattern.")
-              st.stop()
-    
-    # Re-compile subtitle regex
-    current_sub_pattern_regex = None
-    if current_sub_check_pattern and current_sub_pattern_str:
-         try:
-              current_sub_pattern_regex = re.compile(current_sub_pattern_str, re.IGNORECASE)
-         except re.error:
-              st.error("Processing stopped due to invalid subtitle regex pattern.")
               st.stop()
 
     # Chunking and Output Options
@@ -358,31 +250,7 @@ if process_button:
         'word_count_min': current_wc_min if current_check_word_count else 1, # Use defaults if unchecked
         'word_count_max': current_wc_max if current_check_word_count else 999,
         'check_pattern': current_check_pattern,
-        'pattern_regex': current_pattern_regex, # Pass the compiled regex object
-        'check_font_size': current_check_font_size,
-        'font_size_min': current_font_size_min,
-        'font_size_max': current_font_size_max
-    }
-    
-    # Compile subtitle criteria dictionary
-    subtitle_criteria = {
-        'check_style': current_sub_check_style,
-        'style_bold': current_sub_style_bold,
-        'style_italic': current_sub_style_italic,
-        'check_case': current_sub_check_case,
-        'case_title': current_sub_case_title,
-        'case_upper': current_sub_case_upper,
-        'check_layout': current_sub_check_layout,
-        'layout_centered': current_sub_layout_centered,
-        'layout_alone': current_sub_layout_alone,
-        'check_word_count': current_sub_check_word_count,
-        'word_count_min': current_sub_wc_min if current_sub_check_word_count else 1,
-        'word_count_max': current_sub_wc_max if current_sub_check_word_count else 999,
-        'check_pattern': current_sub_check_pattern,
-        'pattern_regex': current_sub_pattern_regex,
-        'check_font_size': current_sub_check_font_size,
-        'font_size_min': current_sub_font_size_min,
-        'font_size_max': current_sub_font_size_max
+        'pattern_regex': current_pattern_regex # Pass the compiled regex object
     }
 
 
@@ -396,8 +264,7 @@ if process_button:
                 pdf_skip_start=current_pdf_skip_start if file_type == 'pdf' else 0,
                 pdf_skip_end=current_pdf_skip_end if file_type == 'pdf' else 0,
                 pdf_first_page_offset=current_pdf_first_page if file_type == 'pdf' else 1,
-                heading_criteria=heading_criteria,
-                subtitle_criteria=subtitle_criteria
+                heading_criteria=heading_criteria
             )
             logging.info(f"Extraction complete. Found {len(structured_sentences)} sentence segments.")
 
@@ -424,17 +291,15 @@ if process_button:
 
             # 5. Format Output (even if chunks list is empty)
             if chunks:
-                df = pd.DataFrame(chunks, columns=['chunk_text', 'marker', 'title', 'subtitle'])
-                # Clean up titles and subtitles
+                df = pd.DataFrame(chunks, columns=['chunk_text', 'marker', 'title'])
+                # Clean up titles
                 df['title'] = df['title'].fillna("Unknown Title")
-                df['subtitle'] = df['subtitle'].fillna("")
                 # Rename columns for clarity
-                final_columns = {'chunk_text': 'Text Chunk', 'marker': 'Source Marker', 
-                                'title': 'Detected Title', 'subtitle': 'Detected Subtitle'}
+                final_columns = {'chunk_text': 'Text Chunk', 'marker': 'Source Marker', 'title': 'Detected Title'}
                 df.rename(columns=final_columns, inplace=True)
             else:
                  # Create empty DataFrame with expected columns if no chunks
-                 df = pd.DataFrame(columns=['Text Chunk', 'Source Marker', 'Detected Title', 'Detected Subtitle'])
+                 df = pd.DataFrame(columns=['Text Chunk', 'Source Marker', 'Detected Title'])
                  if not structured_sentences:
                       st.warning("No text segments extracted.")
                  else:
@@ -442,7 +307,7 @@ if process_button:
 
 
             # Select final columns based on user choice
-            display_columns = ['Text Chunk', 'Detected Title', 'Detected Subtitle']
+            display_columns = ['Text Chunk', 'Detected Title']
             if current_include_marker:
                 # Ensure 'Source Marker' column exists before inserting
                 if 'Source Marker' in df.columns:
