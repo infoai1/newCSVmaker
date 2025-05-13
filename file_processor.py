@@ -14,12 +14,12 @@ DEFAULT_CHAPTER_TITLE_FALLBACK = "Introduction"
 DEFAULT_SUBCHAPTER_TITLE_FALLBACK = None
 
 # ─────────────────────────────────────────────
-# 1. Whitespace cleaner (simplified, glyph map less relevant for DOCX usually)
+# 1. Whitespace cleaner
 # ─────────────────────────────────────────────
 RE_WS = re.compile(r"\s+")
 
 def _clean(raw: str) -> str:
-    txt = raw.replace("\n", " ") # Replace newlines from text content
+    txt = raw.replace("\n", " ")
     return RE_WS.sub(" ", txt).strip()
 
 # ─────────────────────────────────────────────
@@ -28,51 +28,62 @@ def _clean(raw: str) -> str:
 def _matches_criteria_docx(text: str, para_props: Dict[str, Any], criteria: Dict[str, Any]) -> Tuple[bool, str]:
     """Checks if text/paragraph properties match given criteria for DOCX."""
     if not criteria: return False, "No criteria provided"
+    rejection_reason = "Did not meet positive criteria" # Default
+    passes_all_enabled_checks = True
 
-    # Font Properties (Best effort for DOCX)
+    # Font Properties
     if criteria.get('check_font_props'):
-        # Min Font Size
         if criteria.get('min_font_size', 0.0) > 0.0:
             if para_props.get('max_fsize_pt', 0.0) < criteria['min_font_size']:
-                return False, f"Font size {para_props.get('max_fsize_pt', 0.0):.1f}pt < min {criteria['min_font_size']:.1f}pt"
-
-        # Font Names (Check if any of the paragraph's fonts are in the criteria's list)
-        if criteria.get('font_names'): # This is a list of selected font names
+                rejection_reason = f"Font size {para_props.get('max_fsize_pt', 0.0):.1f}pt < min {criteria['min_font_size']:.1f}pt"
+                passes_all_enabled_checks = False
+        if passes_all_enabled_checks and criteria.get('font_names'):
             para_font_names_set = para_props.get('font_names_in_para', set())
             if not any(fn in para_font_names_set for fn in criteria['font_names']):
-                 return False, f"Para fonts {para_font_names_set} not in required {criteria['font_names']}"
-        
-        # Style (Bold/Italic) - based on whether any significant run had the style
-        if criteria.get('style_bold') and not para_props.get('is_bold_present', False):
-            return False, "Style: Not Bold"
-        if criteria.get('style_italic') and not para_props.get('is_italic_present', False):
-            return False, "Style: Not Italic"
-
-
+                 rejection_reason = f"Para fonts {para_font_names_set} not in required {criteria['font_names']}"
+                 passes_all_enabled_checks = False
+        if passes_all_enabled_checks and criteria.get('style_bold') and not para_props.get('is_bold_present', False):
+            rejection_reason = "Style: Not Bold"
+            passes_all_enabled_checks = False
+        if passes_all_enabled_checks and criteria.get('style_italic') and not para_props.get('is_italic_present', False):
+            rejection_reason = "Style: Not Italic"
+            passes_all_enabled_checks = False
+    
     # Text Case
-    if criteria.get('check_case'):
+    if passes_all_enabled_checks and criteria.get('check_case'):
         text_len = len(text.replace(" ","")); upper_count = sum(1 for c in text if c.isupper())
         is_mostly_upper = upper_count / text_len > 0.6 if text_len else False
         is_simple_title = text.istitle()
         if criteria.get('case_upper') and not is_mostly_upper:
-            return False, f"Case: Not mostly UPPER ({upper_count}/{text_len})"
-        if criteria.get('case_title') and not is_simple_title:
-            return False, "Case: Not Title Case"
+            rejection_reason = f"Case: Not mostly UPPER ({upper_count}/{text_len})"
+            passes_all_enabled_checks = False
+        elif passes_all_enabled_checks and criteria.get('case_title') and not is_simple_title: # elif, so it doesn't override previous case reason
+            rejection_reason = "Case: Not Title Case"
+            passes_all_enabled_checks = False
 
     # Word Count
-    if criteria.get('check_word_count'):
+    if passes_all_enabled_checks and criteria.get('check_word_count'):
         word_count = len(text.split())
         min_w = criteria.get('word_count_min', 1)
         max_w = criteria.get('word_count_max', 999)
         if not (min_w <= word_count <= max_w):
-            return False, f"Word Count: {word_count} not in [{min_w}-{max_w}]"
+            rejection_reason = f"Word Count: {word_count} not in [{min_w}-{max_w}]"
+            passes_all_enabled_checks = False
 
-    # Regex Pattern
-    if criteria.get('check_pattern') and criteria.get('pattern_regex'):
+    # Regex Pattern (Only if 'check_pattern' is true and a regex object exists)
+    if passes_all_enabled_checks and criteria.get('check_pattern') and criteria.get('pattern_regex'):
         if not criteria['pattern_regex'].search(text):
-            return False, f"Pattern: Regex '{criteria['pattern_regex'].pattern}' not found"
+            rejection_reason = f"Pattern: Regex '{criteria['pattern_regex'].pattern}' not found"
+            passes_all_enabled_checks = False
+    elif criteria.get('check_pattern') and not criteria.get('pattern_regex'): # Checked but no valid regex
+        rejection_reason = "Pattern: Check enabled but no valid regex provided"
+        passes_all_enabled_checks = False
 
-    return True, "Matches DOCX criteria"
+
+    if passes_all_enabled_checks:
+        return True, "Matches DOCX criteria"
+    else:
+        return False, rejection_reason
 
 
 # ─────────────────────────────────────────────
@@ -99,7 +110,7 @@ def _extract_docx(data: bytes,
     logging.debug(f"Processing DOCX. Chapter Criteria: {ch_criteria}, Sub-Chapter Criteria: {sch_criteria}")
 
     for i, para in enumerate(doc.paragraphs, 1):
-        cleaned_text = _clean(para.text) # Full text of the paragraph
+        cleaned_text = _clean(para.text)
         marker = f"para{i}"
         
         if not cleaned_text:
@@ -108,28 +119,22 @@ def _extract_docx(data: bytes,
         
         logging.debug(f"  Para {i} [{marker}]: Text='{cleaned_text[:60]}...'")
 
-        # Extract font properties from runs in the paragraph
         para_is_bold_present = False
         para_is_italic_present = False
         para_max_font_size_pt = 0.0
         para_font_names_in_para = set()
 
-        if para.runs: # Only proceed if there are runs
+        if para.runs:
             for run in para.runs:
-                if run.text.strip(): # Only consider runs with actual text
-                    if run.bold:
-                        para_is_bold_present = True
-                    if run.italic:
-                        para_is_italic_present = True
+                if run.text.strip():
+                    if run.bold: para_is_bold_present = True
+                    if run.italic: para_is_italic_present = True
                     if run.font.size:
-                        try: # run.font.size could be None
-                            para_max_font_size_pt = max(para_max_font_size_pt, run.font.size.pt)
-                        except AttributeError: # If .pt is not available (e.g. size is None)
-                            pass
-                    if run.font.name:
-                        para_font_names_in_para.add(run.font.name)
+                        try: para_max_font_size_pt = max(para_max_font_size_pt, run.font.size.pt)
+                        except AttributeError: pass
+                    if run.font.name: para_font_names_in_para.add(run.font.name)
         
-        logging.debug(f"    Para {i} Props: Bold={para_is_bold_present}, Italic={para_is_italic_present}, MaxSizePt={para_max_font_size_pt:.1f}, Fonts={para_font_names_in_para}")
+        # logging.debug(f"    Para {i} Props: Bold={para_is_bold_present}, Italic={para_is_italic_present}, MaxSizePt={para_max_font_size_pt:.1f}, Fonts={para_font_names_in_para}")
 
         para_props_for_check = {
             'is_bold_present': para_is_bold_present,
@@ -141,7 +146,7 @@ def _extract_docx(data: bytes,
         is_chapter, ch_reason = _matches_criteria_docx(cleaned_text, para_props_for_check, ch_criteria)
         if is_chapter:
             current_chapter_title = cleaned_text
-            current_sub_chapter_title = DEFAULT_SUBCHAPTER_TITLE_FALLBACK # Reset sub-chapter
+            current_sub_chapter_title = DEFAULT_SUBCHAPTER_TITLE_FALLBACK
             logging.info(f"    -> DOCX Classified as CHAPTER HEADING: '{cleaned_text}' (Reason: {ch_reason})")
         else:
             # logging.debug(f"    -> DOCX Not chapter (Reason: {ch_reason}). Checking sub-chapter...")
@@ -150,12 +155,12 @@ def _extract_docx(data: bytes,
                 current_sub_chapter_title = cleaned_text
                 logging.info(f"    -> DOCX Classified as SUB-CHAPTER HEADING: '{cleaned_text}' (Reason: {sch_reason})")
             # else:
-                 # logging.debug(f"    -> DOCX Classified as BODY (Reason for not sub-chapter: {sch_reason})")
+                # logging.debug(f"    -> DOCX Classified as BODY (Not Chapter: '{ch_reason}', Not Sub-Chapter: '{sch_reason}')")
 
 
         try:
             sentences = nltk.sent_tokenize(cleaned_text)
-            if not sentences and cleaned_text: sentences = [cleaned_text] # If no sentence tokenization, treat whole para as one sentence
+            if not sentences and cleaned_text: sentences = [cleaned_text]
         except Exception as e:
             logging.error(f"NLTK sentence tokenization failed for para {i}: {e}", exc_info=True)
             sentences = [cleaned_text] if cleaned_text else []
@@ -178,10 +183,6 @@ def extract_sentences_with_structure(*,
                                      filename: str,
                                      heading_criteria: Dict[str, Dict[str, Any]]
                                      ) -> List[Tuple[str, str, Optional[str], Optional[str]]]:
-    """
-    Wrapper to call DOCX extractor and normalize output.
-    Returns: List of (sentence, marker, chapter_title, sub_chapter_title) tuples.
-    """
     file_ext = ""
     if isinstance(filename, str) and '.' in filename:
          file_ext = filename.lower().rsplit(".", 1)[-1]
@@ -193,23 +194,30 @@ def extract_sentences_with_structure(*,
         logging.error(f"Unsupported file type: {filename}. This processor is for DOCX only.")
         raise ValueError(f"Unsupported file type: {file_ext}. Expected DOCX.")
 
-    # Compile regex if provided as string in criteria
-    for key_type in ["chapter", "sub_chapter"]:
-        criteria_set = heading_criteria.get(key_type, {})
-        if criteria_set.get('check_pattern') and isinstance(criteria_set.get('pattern_regex_str'), str) and criteria_set.get('pattern_regex_str'):
-            try:
-                criteria_set['pattern_regex'] = re.compile(criteria_set['pattern_regex_str'], re.IGNORECASE)
-            except re.error as e:
-                logging.error(f"Invalid {key_type} regex string: {criteria_set['pattern_regex_str']} - Error: {e}")
-                criteria_set['pattern_regex'] = None
-                criteria_set['check_pattern'] = False
-        elif 'pattern_regex_str' in criteria_set and not criteria_set.get('pattern_regex_str'):
-             criteria_set['pattern_regex'] = None
-        heading_criteria[key_type] = criteria_set
+    # Compile regex for sub-chapter if provided and enabled
+    sch_crit = heading_criteria.get("sub_chapter", {})
+    if sch_crit.get('check_pattern') and isinstance(sch_crit.get('pattern_regex_str'), str) and sch_crit.get('pattern_regex_str'):
+        try:
+            sch_crit['pattern_regex'] = re.compile(sch_crit['pattern_regex_str'], re.IGNORECASE)
+            logging.debug(f"Compiled sub-chapter regex: {sch_crit['pattern_regex_str']}")
+        except re.error as e:
+            logging.error(f"Invalid sub-chapter regex string: {sch_crit['pattern_regex_str']} - Error: {e}")
+            sch_crit['pattern_regex'] = None
+            sch_crit['check_pattern'] = False
+    elif 'pattern_regex_str' in sch_crit: # Ensure it's None if string is empty or check_pattern is false
+         sch_crit['pattern_regex'] = None
+    heading_criteria["sub_chapter"] = sch_crit # Update main dict
+
+    # Chapter criteria does not use regex anymore
+    ch_crit = heading_criteria.get("chapter", {})
+    ch_crit['pattern_regex'] = None
+    ch_crit['check_pattern'] = False
+    heading_criteria["chapter"] = ch_crit
+
 
     output_data = _extract_docx(data=file_content, heading_criteria=heading_criteria)
 
-    logging.info(f"Wrapper returning {len(output_data)} items (sentence, marker, chapter, sub_chapter) from DOCX.")
+    logging.info(f"Wrapper returning {len(output_data)} items from DOCX.")
     return output_data
 
 # --- END OF newCSVmaker-main/file_processor.py ---
