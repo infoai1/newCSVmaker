@@ -12,26 +12,22 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 def ensure_nltk_punkt():
     """Downloads the NLTK 'punkt' tokenizer models if not already downloaded."""
     try:
-        # Try to initialize punkt directly - this will trigger download if needed
         nltk.data.find('tokenizers/punkt')
         logging.info("NLTK 'punkt' tokenizer already available.")
     except LookupError:
         logging.warning("NLTK 'punkt' tokenizer not found. Attempting download...")
         st.warning("NLTK 'punkt' tokenizer not found. Downloading now...")
         
-        # Set NLTK data path to a directory we can write to
         nltk_data_dir = os.path.join(os.path.expanduser('~'), 'nltk_data')
         os.makedirs(nltk_data_dir, exist_ok=True)
-        nltk.data.path.append(nltk_data_dir)
+        if nltk_data_dir not in nltk.data.path: # Add to path if not already there
+            nltk.data.path.append(nltk_data_dir)
         
         try:
-            # Download punkt to the specified directory
             nltk.download('punkt', download_dir=nltk_data_dir)
             st.success("NLTK 'punkt' downloaded successfully.")
             logging.info(f"NLTK 'punkt' downloaded to {nltk_data_dir}")
-            
-            # Verify download
-            nltk.data.find('tokenizers/punkt')
+            nltk.data.find('tokenizers/punkt') # Verify
             logging.info("Verified 'punkt' tokenizer presence after download.")
         except Exception as e:
             st.error(f"Failed to download NLTK 'punkt': {e}")
@@ -55,4 +51,4 @@ def load_tokenizer(encoding_name="cl100k_base"):
     except Exception as e:
         st.error(f"Failed to load tiktoken tokenizer '{encoding_name}': {e}")
         logging.error(f"Failed to load tiktoken tokenizer '{encoding_name}': {e}", exc_info=True)
-        st.stop() # Stop execution if tokenizer fails
+        st.stop()
