@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
-import re # Still needed for general use, even if not for headings
+import re
 import logging
 
 # Import custom modules
@@ -45,8 +45,6 @@ except Exception as e:
 # --- Constants ---
 TARGET_TOKENS = 200
 OVERLAP_SENTENCES = 2
-# DEFAULT_CHAPTER_REGEX - Removed
-# DEFAULT_SUBCHAPTER_REGEX - Removed
 COMMON_FONTS = ["Arial", "Calibri", "Times New Roman", "Courier New", "Verdana", "Georgia", "Helvetica", "Tahoma", "Garamond", "Bookman", "Perpetua"]
 
 
@@ -56,13 +54,12 @@ with st.sidebar:
 
     uploaded_file_widget = st.file_uploader(
         "1. Upload DOCX File",
-        type=['docx'], # Only DOCX
+        type=['docx'],
         accept_multiple_files=False,
         key="file_uploader_widget"
     )
 
     if uploaded_file_widget is not None:
-        # Check if file is different from the one potentially already processed
         if st.session_state.uploaded_file_info is None or \
            st.session_state.uploaded_file_info['name'] != uploaded_file_widget.name or \
            st.session_state.uploaded_file_info['size'] != uploaded_file_widget.size:
@@ -72,13 +69,10 @@ with st.sidebar:
                  "type": uploaded_file_widget.type,
                  "getvalue": uploaded_file_widget.getvalue()
              }
-             # Clear previous results when a new file is uploaded
              st.session_state.processed_data = None
              st.session_state.processed_filename = None
              st.success(f"File selected: {st.session_state.uploaded_file_info['name']} ({st.session_state.uploaded_file_info['size'] / 1024:.1f} KB)")
 
-
-    # --- Display options only if a file has been selected ---
     if st.session_state.uploaded_file_info:
         st.info(f"Processing target: {st.session_state.uploaded_file_info['name']}")
 
@@ -91,7 +85,7 @@ with st.sidebar:
                 ch_check_case = st.checkbox("Enable Text Case Checks?", value=True, key="ch_check_case")
             with col_ch_2:
                 ch_check_word_count = st.checkbox("Enable Word Count Checks?", value=True, key="ch_check_word_count")
-                ch_check_alignment = st.checkbox("Enable Alignment Check?", value=True, key="ch_check_alignment") # New Alignment Check
+                ch_check_alignment = st.checkbox("Enable Alignment Check?", value=True, key="ch_check_alignment")
 
             st.markdown("---")
             c_ch_1, c_ch_2 = st.columns(2)
@@ -104,48 +98,50 @@ with st.sidebar:
 
             with c_ch_2:
                  st.markdown("**Text Case**")
-                 ch_case_title = st.checkbox("Title Case?", value=False, disabled=not ch_check_case, key="ch_case_title")
-                 ch_case_upper = st.checkbox("ALL CAPS?", value=True, disabled=not ch_check_case, key="ch_case_upper")
+                 ch_case_title = st.checkbox("Title Case (Chapter)?", value=False, disabled=not ch_check_case, key="ch_case_title_ch") # Unique key
+                 ch_case_upper = st.checkbox("ALL CAPS (Chapter)?", value=True, disabled=not ch_check_case, key="ch_case_upper")
                  st.markdown("**Word Count**")
-                 ch_word_count_min = st.number_input("Min Words", min_value=1, value=1, step=1, disabled=not ch_check_word_count, key="ch_wc_min")
-                 ch_word_count_max = st.number_input("Max Words", min_value=1, value=10, step=1, disabled=not ch_check_word_count, key="ch_wc_max")
-                 st.markdown("**Alignment (DOCX)**") # New Alignment section
-                 ch_alignment_centered = st.checkbox("Must be Centered?", value=True, disabled=not ch_check_alignment, key="ch_align_center")
-
+                 ch_word_count_min = st.number_input("Min Words (Chapter)", min_value=1, value=1, step=1, disabled=not ch_check_word_count, key="ch_wc_min") # Unique key
+                 ch_word_count_max = st.number_input("Max Words (Chapter)", min_value=1, value=10, step=1, disabled=not ch_check_word_count, key="ch_wc_max") # Unique key
+                 st.markdown("**Alignment (DOCX)**")
+                 ch_alignment_centered = st.checkbox("Must be Centered (Chapter)?", value=True, disabled=not ch_check_alignment, key="ch_align_center")
 
         # --- Sub-Chapter Heading Style Definition ---
-        st.subheader("Define Sub-Chapter Heading Style", help="Configure how sub-chapter titles are identified in DOCX.")
+        st.subheader("Define Sub-Chapter Heading Style", help="Configure how sub-chapter titles are identified in DOCX. Default: ALL CAPS & Centered.")
         with st.expander("Sub-Chapter Heading Criteria", expanded=False):
-            col_sch_1, col_sch_2 = st.columns(2)
+            # Master toggles for sub-chapter section
+            sch_enable_all_criteria = st.checkbox("Enable Sub-Chapter Detection?", value=True, key="sch_enable_all", help="Uncheck to disable all sub-chapter detection.")
+
+            col_sch_1, col_sch_2, col_sch_3 = st.columns(3)
             with col_sch_1:
-                sch_check_font_props = st.checkbox("Enable Font Property Checks (Sub)?", value=False, key="sch_check_font_props")
-                sch_check_case = st.checkbox("Enable Text Case Checks (Sub)?", value=False, key="sch_check_case")
+                sch_check_font_props = st.checkbox("Font Checks (Sub)?", value=False, key="sch_check_font_props", disabled=not sch_enable_all_criteria)
+                sch_check_case = st.checkbox("Case Checks (Sub)?", value=True, key="sch_check_case", disabled=not sch_enable_all_criteria) # Default True
             with col_sch_2:
-                sch_check_word_count = st.checkbox("Enable Word Count Checks (Sub)?", value=True, key="sch_check_word_count")
-                # Pattern check removed for sub-chapters
-                # sch_check_pattern = st.checkbox("Enable Keyword/Pattern Check (Sub)?", value=False, key="sch_check_pattern")
+                sch_check_word_count = st.checkbox("Word Count (Sub)?", value=True, key="sch_check_word_count", disabled=not sch_enable_all_criteria) # Default True
+            with col_sch_3:
+                sch_check_alignment = st.checkbox("Alignment (Sub)?", value=True, key="sch_check_alignment", disabled=not sch_enable_all_criteria) # Default True
 
             st.markdown("---")
-            c_sch_1, c_sch_2 = st.columns(2)
+            c_sch_1, c_sch_2, c_sch_3 = st.columns(3)
             with c_sch_1:
-                st.markdown("**Font Properties (DOCX - Sub)**")
-                sch_style_bold = st.checkbox("Must be Bold (Sub)?", value=True, disabled=not sch_check_font_props, key="sch_style_bold")
-                sch_style_italic = st.checkbox("Must be Italic (Sub)?", value=False, disabled=not sch_check_font_props, key="sch_style_italic")
-                sch_min_font_size = st.number_input("Min Font Size (Sub-Chapter, pts)", min_value=0.0, value=13.0, step=0.5, disabled=not sch_check_font_props, key="sch_min_font_size")
-                sch_font_names = st.multiselect("Font Names (Sub-Chapter)", options=COMMON_FONTS, default=[], disabled=not sch_check_font_props, key="sch_font_names")
+                st.markdown("**Font Props (Sub)**")
+                sch_style_bold = st.checkbox("Bold (Sub)?", value=False, disabled=not sch_check_font_props or not sch_enable_all_criteria, key="sch_style_bold")
+                sch_style_italic = st.checkbox("Italic (Sub)?", value=False, disabled=not sch_check_font_props or not sch_enable_all_criteria, key="sch_style_italic")
+                sch_min_font_size = st.number_input("Min Font (Sub, pts)", min_value=0.0, value=12.0, step=0.5, disabled=not sch_check_font_props or not sch_enable_all_criteria, key="sch_min_font_size")
+                sch_font_names = st.multiselect("Fonts (Sub)", options=COMMON_FONTS, default=[], disabled=not sch_check_font_props or not sch_enable_all_criteria, key="sch_font_names")
 
             with c_sch_2:
                  st.markdown("**Text Case (Sub)**")
-                 sch_case_title = st.checkbox("Title Case (Sub)?", value=True, disabled=not sch_check_case, key="sch_case_title")
-                 sch_case_upper = st.checkbox("ALL CAPS (Sub)?", value=False, disabled=not sch_check_case, key="sch_case_upper")
+                 sch_case_title = st.checkbox("Title Case (Sub)?", value=False, disabled=not sch_check_case or not sch_enable_all_criteria, key="sch_case_title_sch") # Unique key
+                 sch_case_upper = st.checkbox("ALL CAPS (Sub)?", value=True, disabled=not sch_check_case or not sch_enable_all_criteria, key="sch_case_upper_sch") # Default True, unique key
                  st.markdown("**Word Count (Sub)**")
-                 sch_word_count_min = st.number_input("Min Words (Sub)", min_value=1, value=1, step=1, disabled=not sch_check_word_count, key="sch_wc_min")
-                 sch_word_count_max = st.number_input("Max Words (Sub)", min_value=1, value=15, step=1, disabled=not sch_check_word_count, key="sch_wc_max")
+                 sch_word_count_min = st.number_input("Min Words (Sub)", min_value=1, value=1, step=1, disabled=not sch_check_word_count or not sch_enable_all_criteria, key="sch_wc_min_sch") # Unique key
+                 sch_word_count_max = st.number_input("Max Words (Sub)", min_value=1, value=10, step=1, disabled=not sch_check_word_count or not sch_enable_all_criteria, key="sch_wc_max_sch") # Unique key
 
-            # Keyword/Pattern section removed for sub-chapters
-            # st.markdown("**Keyword/Pattern (Sub-Chapter)**")
-            # sch_pattern_regex_str = st.text_input("Regex (Sub-Chapter)", value=DEFAULT_SUBCHAPTER_REGEX, disabled=not sch_check_pattern, key="sch_pattern_str")
-            # is_sch_regex_valid = True # Default to true as pattern is removed
+            with c_sch_3:
+                 st.markdown("**Alignment (Sub)**")
+                 sch_alignment_centered = st.checkbox("Centered (Sub)?", value=True, disabled=not sch_check_alignment or not sch_enable_all_criteria, key="sch_align_center_sch") # Default True, unique key
+
 
         st.subheader("Chunking Strategy")
         chunk_mode = st.radio(
@@ -158,25 +154,14 @@ with st.sidebar:
         include_marker = st.checkbox("Include Paragraph Marker in Output?", value=True, key="include_marker")
 
         st.markdown("---")
-        # No more regex checks needed to disable button
-        process_button_disabled = False
-
-        # Removed warning about Regex patterns
-        # if process_button_disabled:
-        #      st.warning("Cannot process: Fix invalid or empty Regex pattern(s) first.")
-
         process_button = st.button(
-            "🚀 Process File",
-            type="primary",
-            disabled=process_button_disabled, # Should always be enabled now unless other logic added
-            key="process_button"
+            "🚀 Process File", type="primary", key="process_button"
             )
-    else: # No file selected in session state
+    else:
         st.info("Please upload a DOCX file to begin.")
-        process_button = False # Ensure button state is false
+        process_button = False
 
 
-# --- Main Area Logic ---
 if process_button:
     file_info = st.session_state.uploaded_file_info
     if not file_info:
@@ -186,7 +171,6 @@ if process_button:
     filename = file_info['name']
     file_content = file_info['getvalue']
 
-    # --- Retrieve Chapter Heading Criteria ---
     ch_heading_criteria = {
         'check_font_props': st.session_state.ch_check_font_props,
         'style_bold': st.session_state.ch_style_bold,
@@ -194,39 +178,39 @@ if process_button:
         'min_font_size': st.session_state.ch_min_font_size if st.session_state.ch_check_font_props else 0.0,
         'font_names': st.session_state.ch_font_names if st.session_state.ch_check_font_props else [],
         'check_case': st.session_state.ch_check_case,
-        'case_title': st.session_state.ch_case_title,
+        'case_title': st.session_state.ch_case_title_ch, # Use unique key
         'case_upper': st.session_state.ch_case_upper,
         'check_word_count': st.session_state.ch_check_word_count,
         'word_count_min': st.session_state.ch_wc_min if st.session_state.ch_check_word_count else 1,
         'word_count_max': st.session_state.ch_wc_max if st.session_state.ch_check_word_count else 999,
-        'check_alignment': st.session_state.ch_check_alignment, # New alignment check flag
-        'alignment_centered': st.session_state.ch_align_center if st.session_state.ch_check_alignment else False, # New alignment value flag
-        'check_pattern': False,
-        'pattern_regex': None,
+        'check_alignment': st.session_state.ch_check_alignment,
+        'alignment_centered': st.session_state.ch_align_center if st.session_state.ch_check_alignment else False,
+        'check_pattern': False, 'pattern_regex': None,
     }
 
-    # --- Retrieve Sub-Chapter Heading Criteria ---
-    sch_heading_criteria = {
-        'check_font_props': st.session_state.sch_check_font_props,
-        'style_bold': st.session_state.sch_style_bold,
-        'style_italic': st.session_state.sch_style_italic,
-        'min_font_size': st.session_state.sch_min_font_size if st.session_state.sch_check_font_props else 0.0,
-        'font_names': st.session_state.sch_font_names if st.session_state.sch_check_font_props else [],
-        'check_case': st.session_state.sch_check_case,
-        'case_title': st.session_state.sch_case_title,
-        'case_upper': st.session_state.sch_case_upper,
-        'check_word_count': st.session_state.sch_check_word_count,
-        'word_count_min': st.session_state.sch_wc_min if st.session_state.sch_check_word_count else 1,
-        'word_count_max': st.session_state.sch_wc_max if st.session_state.sch_check_word_count else 999,
-        'check_alignment': False, # Alignment check not added for sub-chapters here
-        'alignment_centered': False,
-        'check_pattern': False, # Pattern check explicitly disabled for sub-chapters
-        'pattern_regex': None,   # No compiled regex for sub-chapters
-    }
+    # Sub-Chapter Criteria (only if master toggle is enabled)
+    sch_heading_criteria = {} # Initialize as empty
+    if st.session_state.sch_enable_all: # Check master toggle
+        sch_heading_criteria = {
+            'check_font_props': st.session_state.sch_check_font_props,
+            'style_bold': st.session_state.sch_style_bold,
+            'style_italic': st.session_state.sch_style_italic,
+            'min_font_size': st.session_state.sch_min_font_size if st.session_state.sch_check_font_props else 0.0,
+            'font_names': st.session_state.sch_font_names if st.session_state.sch_check_font_props else [],
+            'check_case': st.session_state.sch_check_case,
+            'case_title': st.session_state.sch_case_title_sch, # Use unique key
+            'case_upper': st.session_state.sch_case_upper_sch, # Use unique key
+            'check_word_count': st.session_state.sch_check_word_count,
+            'word_count_min': st.session_state.sch_wc_min_sch if st.session_state.sch_check_word_count else 1,
+            'word_count_max': st.session_state.sch_wc_max_sch if st.session_state.sch_check_word_count else 999,
+            'check_alignment': st.session_state.sch_check_alignment,
+            'alignment_centered': st.session_state.sch_align_center_sch if st.session_state.sch_check_alignment else False,
+            'check_pattern': False, 'pattern_regex': None,
+        }
 
     combined_heading_criteria = {
         "chapter": ch_heading_criteria,
-        "sub_chapter": sch_heading_criteria
+        "sub_chapter": sch_heading_criteria # Will be empty if sch_enable_all is False
     }
 
     with st.spinner(f"Processing '{filename}'... This may take a moment."):
@@ -246,48 +230,32 @@ if process_button:
                 logging.info(f"Starting chunking using mode: {st.session_state.chunk_mode}...")
                 if st.session_state.chunk_mode.startswith("Chunk by ~"):
                     chunks = chunk_structured_sentences(
-                        structured_data=structured_sentences,
-                        tokenizer=tokenizer,
-                        target_tokens=TARGET_TOKENS,
-                        overlap_sentences=OVERLAP_SENTENCES
+                        structured_data=structured_sentences, tokenizer=tokenizer,
+                        target_tokens=TARGET_TOKENS, overlap_sentences=OVERLAP_SENTENCES
                     )
-                else: # Chunk by Chapter Title
-                    chunks = chunk_by_chapter(
-                        structured_data=structured_sentences
-                    )
+                else:
+                    chunks = chunk_by_chapter(structured_data=structured_sentences)
                 logging.info(f"Chunking complete. Created {len(chunks)} chunks.")
 
             if chunks:
-                # Expecting 4 elements: chunk_text, marker, chapter_title, sub_chapter_title
                 df = pd.DataFrame(chunks, columns=['chunk_text', 'marker', 'title', 'sub_title'])
                 df['title'] = df['title'].fillna("Unknown Chapter")
                 df['sub_title'] = df['sub_title'].fillna("")
                 final_columns = {
-                    'chunk_text': 'Text Chunk',
-                    'marker': 'Source Marker',
-                    'title': 'Detected Chapter',
-                    'sub_title': 'Detected Sub-Chapter'
+                    'chunk_text': 'Text Chunk', 'marker': 'Source Marker',
+                    'title': 'Detected Chapter', 'sub_title': 'Detected Sub-Chapter'
                 }
                 df.rename(columns=final_columns, inplace=True)
             else:
-                 # Create empty DataFrame with expected columns if no chunks
                  df = pd.DataFrame(columns=['Text Chunk', 'Source Marker', 'Detected Chapter', 'Detected Sub-Chapter'])
-                 if not structured_sentences:
-                      st.warning("No text segments extracted.")
-                 else:
-                      st.warning("Text extracted but chunking resulted in zero chunks.")
+                 if not structured_sentences: st.warning("No text segments extracted.")
+                 else: st.warning("Text extracted but chunking resulted in zero chunks.")
 
-            # Select final columns based on user choice
             display_columns = ['Text Chunk', 'Detected Chapter', 'Detected Sub-Chapter']
-            if st.session_state.include_marker:
-                # Ensure 'Source Marker' column exists before inserting
-                if 'Source Marker' in df.columns:
-                     display_columns.insert(1, 'Source Marker')
-
-            # Ensure all selected columns exist in the DataFrame
+            if st.session_state.include_marker and 'Source Marker' in df.columns:
+                display_columns.insert(1, 'Source Marker')
             final_df = df[[col for col in display_columns if col in df.columns]]
 
-            # Store results in session state
             st.session_state.processed_data = final_df
             st.session_state.processed_filename = filename.split('.')[0]
             st.success(f"✅ Processing complete for '{filename}'!")
@@ -295,35 +263,26 @@ if process_button:
         except (ValueError, RuntimeError, FileNotFoundError, Exception) as e:
             logging.error(f"Processing failed for {filename}: {e}", exc_info=True)
             st.error(f"An error occurred during processing: {e}")
-            # Clear results on error
             st.session_state.processed_data = None
             st.session_state.processed_filename = None
 
-
-# --- Display Results Area ---
 if st.session_state.processed_data is not None:
     st.header("📊 Processed Chunks")
     st.dataframe(st.session_state.processed_data, use_container_width=True)
-
     if not st.session_state.processed_data.empty:
         st.info(f"Total Chunks Created: {len(st.session_state.processed_data)}")
-        # --- Download Button ---
         try:
             csv_data = st.session_state.processed_data.to_csv(index=False).encode('utf-8')
             download_filename = f"{st.session_state.processed_filename}_chunks.csv"
             st.download_button(
-                label="📥 Download Chunks as CSV",
-                data=csv_data,
-                file_name=download_filename,
-                mime='text/csv',
-                key="download_button"
+                label="📥 Download Chunks as CSV", data=csv_data,
+                file_name=download_filename, mime='text/csv', key="download_button"
             )
         except Exception as download_err:
             st.error(f"Failed to prepare download file: {download_err}")
             logging.error(f"CSV conversion/download error: {download_err}", exc_info=True)
     else:
         st.info("Processing resulted in 0 chunks.")
-
-elif st.session_state.uploaded_file_info is None: # Only show if no file ever uploaded
+elif st.session_state.uploaded_file_info is None:
      st.markdown("---")
      st.markdown("Upload a DOCX file and configure options in the sidebar to start processing.")
