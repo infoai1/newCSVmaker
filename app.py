@@ -5,57 +5,74 @@ import re
 import logging
 
 # --- Setup Logging and Helpers ---
-# This needs to be configured before other modules that use logging are imported,
-# if those modules also try to configure basicConfig.
-# Using force=True to try and override any default Streamlit logging config.
+# Configure root logger first
 logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s | %(levelname)-8s | %(name)-12s | %(module)s:%(lineno)d | %(message)s",
-    force=True
+    level=logging.DEBUG, # Set root to DEBUG
+    format="%(asctime)s | %(levelname)-8s | %(name)-20s | %(module)s:%(lineno)d | %(message)s",
+    force=True # Attempt to override any existing handlers on the root logger
 )
-# Test log to confirm DEBUG level
-logging.debug("app.py: Logging configured at DEBUG level.")
 
+# Get the logger for the file_processor module and ensure it's also DEBUG
+# The actual name might vary slightly based on how Streamlit runs/imports modules.
+# Common names are 'file_processor' or 'main.file_processor' or 'app.file_processor'
+# We can try a few, or be very specific if we know the exact import path.
+# For now, let's try to get 'file_processor' and also log its effective level.
+# This assumes your file is named file_processor.py and is in the same directory or a standard import path.
 
-# Import custom modules AFTER basicConfig is set up if they also use logging.
+# Attempt to set specific module loggers to DEBUG if basicConfig isn't enough
+# logging.getLogger('file_processor').setLevel(logging.DEBUG)
+# logging.getLogger('app').setLevel(logging.DEBUG) # If app.py is 'app'
+# logging.getLogger(__name__).setLevel(logging.DEBUG) # For app.py itself if __name__ is 'app' or similar
+
+logger_app = logging.getLogger(__name__) # Logger for app.py
+logger_app.debug(f"app.py: Logger '{logger_app.name}' effective level: {logging.getLevelName(logger_app.getEffectiveLevel())}")
+
+# Import custom modules AFTER basicConfig is set up
 try:
     from utils import ensure_nltk_punkt, load_tokenizer
-    from file_processor import extract_sentences_with_structure
+    from file_processor import extract_sentences_with_structure # This will create/get logger 'file_processor'
     from chunker import chunk_structured_sentences, chunk_by_chapter
+    
+    # Now that file_processor is imported, try to set its logger level if needed
+    fp_logger = logging.getLogger('file_processor') # Assuming the module is named file_processor.py
+    fp_logger.setLevel(logging.DEBUG) # Explicitly set level for this logger
+    logger_app.debug(f"app.py: Logger '{fp_logger.name}' forced to DEBUG. Effective level: {logging.getLevelName(fp_logger.getEffectiveLevel())}")
+
 except ImportError as ie:
-    logging.error(f"app.py: Failed to import necessary modules. Error: {ie}", exc_info=True)
+    logger_app.error(f"app.py: Failed to import necessary modules. Error: {ie}", exc_info=True)
     st.error(f"Failed to import necessary modules. Check file structure and names. Error: {ie}")
     st.stop()
+
 
 # --- Page Config ---
 try:
     st.set_page_config(page_title="DOCX Processor", layout="wide")
     st.title("📖 DOCX Text Processor for AI Tasks")
     st.markdown("Upload a DOCX book file to extract, structure, and chunk its content.")
-    logging.debug("app.py: Page config set.")
+    logger_app.debug("app.py: Page config set.")
 except Exception as page_setup_err:
-     logging.error(f"app.py: Streamlit page setup failed: {page_setup_err}", exc_info=True)
+     logger_app.error(f"app.py: Streamlit page setup failed: {page_setup_err}", exc_info=True)
      st.error(f"Error initializing Streamlit page: {page_setup_err}")
      st.stop()
 
 # --- Initialize Session State ---
 if 'processed_data' not in st.session_state:
     st.session_state.processed_data = None
-    logging.debug("app.py: Initialized session_state.processed_data")
+    logger_app.debug("app.py: Initialized session_state.processed_data")
 if 'processed_filename' not in st.session_state:
     st.session_state.processed_filename = None
-    logging.debug("app.py: Initialized session_state.processed_filename")
+    logger_app.debug("app.py: Initialized session_state.processed_filename")
 if 'uploaded_file_info' not in st.session_state:
     st.session_state.uploaded_file_info = None
-    logging.debug("app.py: Initialized session_state.uploaded_file_info")
+    logger_app.debug("app.py: Initialized session_state.uploaded_file_info")
 
 
 try:
     ensure_nltk_punkt()
     tokenizer = load_tokenizer()
-    logging.debug("app.py: NLTK and Tokenizer initialized.")
+    logger_app.debug("app.py: NLTK and Tokenizer initialized.")
 except Exception as e:
-    logging.error(f"app.py: Initialization failed (NLTK/Tokenizer): {e}", exc_info=True)
+    logger_app.error(f"app.py: Initialization failed (NLTK/Tokenizer): {e}", exc_info=True)
     st.error(f"Initialization failed (NLTK/Tokenizer): {e}")
     st.stop()
 
@@ -63,12 +80,12 @@ except Exception as e:
 TARGET_TOKENS = 200
 OVERLAP_SENTENCES = 2
 COMMON_FONTS = ["Arial", "Calibri", "Times New Roman", "Courier New", "Verdana", "Georgia", "Helvetica", "Tahoma", "Garamond", "Bookman", "Perpetua"]
-logging.debug("app.py: Constants defined.")
+logger_app.debug("app.py: Constants defined.")
 
 # --- Sidebar Definition ---
 with st.sidebar:
     st.header("⚙️ Processing Options")
-    logging.debug("app.py: Sidebar rendering.")
+    logger_app.debug("app.py: Sidebar rendering.")
 
     uploaded_file_widget = st.file_uploader(
         "1. Upload DOCX File",
@@ -78,7 +95,7 @@ with st.sidebar:
     )
 
     if uploaded_file_widget is not None:
-        logging.debug(f"app.py: File uploaded: {uploaded_file_widget.name}")
+        logger_app.debug(f"app.py: File uploaded: {uploaded_file_widget.name}")
         if st.session_state.uploaded_file_info is None or \
            st.session_state.uploaded_file_info['name'] != uploaded_file_widget.name or \
            st.session_state.uploaded_file_info['size'] != uploaded_file_widget.size:
@@ -90,19 +107,18 @@ with st.sidebar:
              }
              st.session_state.processed_data = None
              st.session_state.processed_filename = None
-             logging.info(f"app.py: New file selected and session state updated: {st.session_state.uploaded_file_info['name']}")
+             logger_app.info(f"app.py: New file selected and session state updated: {st.session_state.uploaded_file_info['name']}")
              st.success(f"File selected: {st.session_state.uploaded_file_info['name']} ({st.session_state.uploaded_file_info['size'] / 1024:.1f} KB)")
-    # else:
-        # logging.debug("app.py: No file uploaded yet via widget.")
 
 
     if st.session_state.uploaded_file_info:
-        logging.debug(f"app.py: Processing options for file: {st.session_state.uploaded_file_info['name']}")
+        logger_app.debug(f"app.py: Processing options for file: {st.session_state.uploaded_file_info['name']}")
         st.info(f"Processing target: {st.session_state.uploaded_file_info['name']}")
 
         # --- Chapter Heading Style Definition ---
         st.subheader("Define Chapter Heading Style", help="Configure how chapter titles are identified in DOCX.")
         with st.expander("Chapter Heading Criteria", expanded=True):
+            # ... (rest of chapter criteria UI - no changes from previous full app.py) ...
             col_ch_1, col_ch_2 = st.columns(2)
             with col_ch_1:
                 ch_check_font_props = st.checkbox("Enable Font Property Checks?", value=True, key="ch_check_font_props")
@@ -130,9 +146,11 @@ with st.sidebar:
                  st.markdown("**Alignment (DOCX)**")
                  ch_alignment_centered = st.checkbox("Must be Centered (Chapter)?", value=True, disabled=not ch_check_alignment, key="ch_align_center")
 
+
         # --- Sub-Chapter Heading Style Definition ---
         st.subheader("Define Sub-Chapter Heading Style", help="Configure how sub-chapter titles are identified in DOCX. Default: ALL CAPS & Centered.")
         with st.expander("Sub-Chapter Heading Criteria", expanded=False):
+            # ... (rest of sub-chapter criteria UI - no changes from previous full app.py) ...
             sch_enable_all_criteria = st.checkbox("Enable Sub-Chapter Detection?", value=True, key="sch_enable_all", help="Uncheck to disable all sub-chapter detection.")
 
             col_sch_1, col_sch_2, col_sch_3 = st.columns(3)
@@ -180,22 +198,22 @@ with st.sidebar:
             "🚀 Process File", type="primary", key="process_button"
             )
     else:
-        logging.debug("app.py: No file in session state, showing upload prompt.")
+        logger_app.debug("app.py: No file in session state, showing upload prompt.")
         st.info("Please upload a DOCX file to begin.")
         process_button = False
 
 
 if process_button:
-    logging.info("app.py: Process button clicked.")
+    logger_app.info("app.py: Process button clicked.")
     file_info = st.session_state.uploaded_file_info
     if not file_info:
-        logging.error("app.py: Process button clicked but no file_info in session state.")
+        logger_app.error("app.py: Process button clicked but no file_info in session state.")
         st.error("Error: No file information found. Please re-upload.")
         st.stop()
 
     filename = file_info['name']
     file_content = file_info['getvalue']
-    logging.debug(f"app.py: Processing file: {filename}")
+    logger_app.debug(f"app.py: Processing file: {filename}")
 
     ch_heading_criteria = {
         'check_font_props': st.session_state.ch_check_font_props,
@@ -213,10 +231,10 @@ if process_button:
         'alignment_centered': st.session_state.ch_align_center if st.session_state.ch_check_alignment else False,
         'check_pattern': False, 'pattern_regex': None,
     }
-    logging.debug(f"app.py: Chapter criteria collected: {ch_heading_criteria}")
+    logger_app.debug(f"app.py: Chapter criteria collected: {ch_heading_criteria}")
 
     sch_heading_criteria = {}
-    if st.session_state.get("sch_enable_all", False): # Use .get for safety if key might not exist
+    if st.session_state.get("sch_enable_all", False):
         sch_heading_criteria = {
             'check_font_props': st.session_state.sch_check_font_props,
             'style_bold': st.session_state.sch_style_bold,
@@ -233,8 +251,7 @@ if process_button:
             'alignment_centered': st.session_state.sch_align_center_sch if st.session_state.sch_check_alignment else False,
             'check_pattern': False, 'pattern_regex': None,
         }
-    logging.debug(f"app.py: Sub-chapter criteria collected (enabled: {st.session_state.get('sch_enable_all', False)}): {sch_heading_criteria}")
-
+    logger_app.debug(f"app.py: Sub-chapter criteria collected (enabled: {st.session_state.get('sch_enable_all', False)}): {sch_heading_criteria}")
 
     combined_heading_criteria = {
         "chapter": ch_heading_criteria,
@@ -243,19 +260,19 @@ if process_button:
 
     with st.spinner(f"Processing '{filename}'... This may take a moment."):
         try:
-            logging.info(f"app.py: Calling extract_sentences_with_structure for {filename}")
+            logger_app.info(f"app.py: Calling extract_sentences_with_structure for {filename}")
             structured_sentences = extract_sentences_with_structure(
                 file_content=file_content,
                 filename=filename,
                 heading_criteria=combined_heading_criteria
             )
-            logging.info(f"app.py: Extraction complete. Found {len(structured_sentences)} sentence segments.")
+            logger_app.info(f"app.py: Extraction complete. Found {len(structured_sentences)} sentence segments.")
 
             if not structured_sentences:
                 st.warning("No text segments were extracted. Check DOCX content or heading criteria.")
                 chunks = []
             else:
-                logging.info(f"app.py: Starting chunking using mode: {st.session_state.chunk_mode}...")
+                logger_app.info(f"app.py: Starting chunking using mode: {st.session_state.chunk_mode}...")
                 if st.session_state.chunk_mode.startswith("Chunk by ~"):
                     chunks = chunk_structured_sentences(
                         structured_data=structured_sentences, tokenizer=tokenizer,
@@ -263,7 +280,7 @@ if process_button:
                     )
                 else:
                     chunks = chunk_by_chapter(structured_data=structured_sentences)
-                logging.info(f"app.py: Chunking complete. Created {len(chunks)} chunks.")
+                logger_app.info(f"app.py: Chunking complete. Created {len(chunks)} chunks.")
 
             if chunks:
                 df = pd.DataFrame(chunks, columns=['chunk_text', 'marker', 'title', 'sub_title'])
@@ -278,7 +295,7 @@ if process_button:
                  df = pd.DataFrame(columns=['Text Chunk', 'Source Marker', 'Detected Chapter', 'Detected Sub-Chapter'])
                  if not structured_sentences: st.warning("No text segments extracted.")
                  else: st.warning("Text extracted but chunking resulted in zero chunks.")
-            logging.debug(f"app.py: DataFrame created/updated. Shape: {df.shape}")
+            logger_app.debug(f"app.py: DataFrame created/updated. Shape: {df.shape}")
 
             display_columns = ['Text Chunk', 'Detected Chapter', 'Detected Sub-Chapter']
             if st.session_state.include_marker and 'Source Marker' in df.columns:
@@ -288,20 +305,16 @@ if process_button:
             st.session_state.processed_data = final_df
             st.session_state.processed_filename = filename.split('.')[0]
             st.success(f"✅ Processing complete for '{filename}'!")
-            logging.info(f"app.py: Processing complete for '{filename}'.")
-
+            logger_app.info(f"app.py: Processing complete for '{filename}'.")
 
         except (ValueError, RuntimeError, FileNotFoundError, Exception) as e:
-            logging.error(f"app.py: Processing failed for {filename}: {e}", exc_info=True)
+            logger_app.error(f"app.py: Processing failed for {filename}: {e}", exc_info=True)
             st.error(f"An error occurred during processing: {e}")
             st.session_state.processed_data = None
             st.session_state.processed_filename = None
-# else:
-    # logging.debug("app.py: Process button not clicked.")
-
 
 if st.session_state.processed_data is not None:
-    logging.debug("app.py: Displaying processed data.")
+    logger_app.debug("app.py: Displaying processed data.")
     st.header("📊 Processed Chunks")
     st.dataframe(st.session_state.processed_data, use_container_width=True)
     if not st.session_state.processed_data.empty:
@@ -314,19 +327,14 @@ if st.session_state.processed_data is not None:
                 file_name=download_filename, mime='text/csv', key="download_button"
             )
         except Exception as download_err:
-            logging.error(f"app.py: Failed to prepare download file: {download_err}", exc_info=True)
+            logger_app.error(f"app.py: Failed to prepare download file: {download_err}", exc_info=True)
             st.error(f"Failed to prepare download file: {download_err}")
     else:
         st.info("Processing resulted in 0 chunks.")
-# else:
-    # logging.debug("app.py: No processed data to display.")
-
 
 if st.session_state.uploaded_file_info is None and st.session_state.processed_data is None :
-     # This condition might need adjustment depending on when you want to show this message.
-     # Show if no file has ever been uploaded AND no processing has happened.
-     logging.debug("app.py: No file uploaded and no data processed, showing initial prompt.")
+     logger_app.debug("app.py: No file uploaded and no data processed, showing initial prompt.")
      st.markdown("---")
      st.markdown("Upload a DOCX file and configure options in the sidebar to start processing.")
 
-logging.debug("app.py: Reached end of script execution for this run.")
+logger_app.debug("app.py: Reached end of script execution for this run.")
