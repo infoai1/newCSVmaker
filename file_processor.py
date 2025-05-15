@@ -1,8 +1,8 @@
 import docx
 from docx.shared import Pt
-from docx.enum.text import WD_ALIGN_PARAGRAPH # Keep for logging, not for criteria
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 import io
-import re # Keep for _clean
+import re 
 import nltk
 import logging
 from typing import List, Tuple, Optional, Dict, Any
@@ -17,61 +17,41 @@ def _clean(raw: str) -> str:
     txt = raw.replace("\n", " ")
     return RE_WS.sub(" ", txt).strip()
 
-def _matches_criteria_docx(text: str, para_props: Dict[str, Any], criteria: Dict[str, Any], type_label: str) -> Tuple[bool, str]:
-    if not criteria or not criteria.get('font_names') or criteria.get('min_font_size') is None:
-        logger.debug(f"    [{type_label}] Criteria insufficient (missing font_names or min_font_size). Text: '{text[:30]}...'")
-        return False, "Core criteria (font name/size) missing"
+def _matches_criteria_docx_font_size_and_centered(text: str, para_props: Dict[str, Any], criteria: Dict[str, Any], type_label: str) -> Tuple[bool, str]:
+    if not criteria or criteria.get('min_font_size') is None or criteria.get('alignment_centered') is not True:
+        # alignment_centered must be explicitly True in criteria now
+        logger.debug(f"    [{type_label}] Criteria insufficient (min_font_size missing or alignment_centered not True). Text: '{text[:30]}...' Criteria: {criteria}")
+        return False, "Core criteria (min_font_size / alignment_centered) missing or not True"
 
     rejection_reason = "Matches all criteria"
     passes_all_enabled_checks = True
     
-    logger.debug(f"    [{type_label}] Checking text: '{text[:40]}...' against criteria: {criteria} with props: {para_props}")
+    logger.debug(f"    [{type_label}] Checking text: '{text[:40]}...' with MinFontSize={criteria['min_font_size']:.1f}pt & Centered={criteria['alignment_centered']} against ParaMaxFontSize={para_props.get('max_fsize_pt', 0.0):.1f}pt, ParaAlign={para_props.get('alignment')}")
 
     # 1. Min Font Size (Mandatory)
     if para_props.get('max_fsize_pt', 0.0) < criteria['min_font_size']:
         rejection_reason = f"Font size {para_props.get('max_fsize_pt', 0.0):.1f}pt < min {criteria['min_font_size']:.1f}pt"
         passes_all_enabled_checks = False
     
-    # 2. Font Names (Mandatory if list is not empty)
-    if passes_all_enabled_checks and criteria['font_names']: # Criteria['font_names'] is a list
-        if not any(fn in para_props.get('font_names_in_para', set()) for fn in criteria['font_names']):
-             rejection_reason = f"Para fonts {para_props.get('font_names_in_para', set())} not in required {criteria['font_names']}"
-             passes_all_enabled_checks = False
-    elif passes_all_enabled_checks and not criteria['font_names']: # Font names list is empty, means any font is okay if size matches
-        logger.debug(f"    [{type_label}] Font names list is empty, passing font name check by default for '{text[:30]}...'.")
-        pass # Passes if font names list is empty
-
-    # --- Optional secondary checks (if they were added back to UI and criteria dict) ---
-    # These keys ('check_alignment', 'alignment_centered', 'check_case', 'case_upper')
-    # would need to be present in the criteria dict if these checks are desired.
-    # For now, they are commented out in app.py's criteria collection.
-    
-    # Optional: Alignment Check (if 'check_alignment' and 'alignment_centered' are in criteria)
-    # if passes_all_enabled_checks and criteria.get('check_alignment') and criteria.get('alignment_centered'):
-    #     if para_props.get('alignment') != WD_ALIGN_PARAGRAPH.CENTER:
-    #         align_val = para_props.get('alignment')
-    #         align_str = str(align_val)
-    #         if align_val == WD_ALIGN_PARAGRAPH.LEFT: align_str = "LEFT"
-    #         # ... other alignment string conversions
-    #         elif align_val is None: align_str = "NOT SET"
-    #         rejection_reason = f"Alignment: Not Centered (Actual: {align_str})"
-    #         passes_all_enabled_checks = False
-
-    # Optional: ALL CAPS Check (if 'check_case' and 'case_upper' are in criteria)
-    # if passes_all_enabled_checks and criteria.get('check_case') and criteria.get('case_upper'):
-    #     non_space_text = "".join(text.split())
-    #     actual_is_all_caps = non_space_text.isupper() if non_space_text else False
-    #     if not actual_is_all_caps:
-    #         rejection_reason = f"Case: Not ALL CAPS (Text: '{text[:30]}...')"
-    #         passes_all_enabled_checks = False
-    # --- End of optional checks ---
+    # 2. Centered Alignment (Mandatory, as 'alignment_centered' is True in criteria)
+    if passes_all_enabled_checks: # Only check if font size passed
+        if para_props.get('alignment') != WD_ALIGN_PARAGRAPH.CENTER:
+            align_val = para_props.get('alignment')
+            align_str = str(align_val)
+            if align_val == WD_ALIGN_PARAGRAPH.LEFT: align_str = "LEFT"
+            elif align_val == WD_ALIGN_PARAGRAPH.RIGHT: align_str = "RIGHT"
+            elif align_val == WD_ALIGN_PARAGRAPH.JUSTIFY: align_str = "JUSTIFY"
+            elif align_val is None: align_str = "NOT SET (likely LEFT)"
+            rejection_reason = f"Alignment: Not Centered (Actual: {align_str})"
+            passes_all_enabled_checks = False
 
     if passes_all_enabled_checks:
-        logger.debug(f"    [{type_label}] PASS: '{text[:30]}...' matches criteria.")
+        logger.debug(f"    [{type_label}] PASS: '{text[:30]}...' matches Font Size & Centered criteria.")
     else:
         logger.debug(f"    [{type_label}] FAIL for '{text[:30]}...': {rejection_reason}")
         
-    return (True, "Matches criteria") if passes_all_enabled_checks else (False, rejection_reason)
+    return (True, f"Matches Font Size ({criteria['min_font_size']:.1f}pt) & Centered") if passes_all_enabled_checks else (False, rejection_reason)
+
 
 def _extract_docx(data: bytes, heading_criteria: Dict[str, Dict[str, Any]]) -> List[Tuple[str, str, Optional[str], Optional[str]]]:
     ch_criteria = heading_criteria.get("chapter", {})
@@ -85,7 +65,7 @@ def _extract_docx(data: bytes, heading_criteria: Dict[str, Dict[str, Any]]) -> L
     current_chapter_title = DEFAULT_CHAPTER_TITLE_FALLBACK
     current_sub_chapter_title = DEFAULT_SUBCHAPTER_TITLE_FALLBACK
 
-    logger.info(f"--- Starting DOCX Extraction (FONT NAME & SIZE ONLY) ---")
+    logger.info(f"--- Starting DOCX Extraction (FONT SIZE & CENTERED Mandatory Criteria) ---")
     logger.debug(f"Chapter Criteria: {ch_criteria}")
     logger.debug(f"Sub-Chapter Criteria: {sch_criteria if sch_criteria else 'Detection Disabled'}")
 
@@ -94,50 +74,61 @@ def _extract_docx(data: bytes, heading_criteria: Dict[str, Dict[str, Any]]) -> L
         marker = f"para{i}"
         if not cleaned_text: continue
 
-        # logger.debug(f"--- Para {i} [{marker}] Text: '{cleaned_text[:60]}...' ---") # Can be too verbose
-
-        para_is_bold, para_is_italic, para_max_fsize_pt = False, False, 0.0
-        para_fonts = set()
+        para_max_fsize_pt = 0.0
         para_align = para.alignment
+        # Other props for logging context
+        para_fonts = set()
+        para_is_bold = False
+        para_is_italic = False
+
 
         if para.runs:
             for run in para.runs:
                 if run.text.strip():
-                    if run.bold: para_is_bold = True
-                    if run.italic: para_is_italic = True
                     if run.font.size:
                         try: para_max_fsize_pt = max(para_max_fsize_pt, run.font.size.pt)
                         except AttributeError: pass
                     if run.font.name: para_fonts.add(run.font.name)
+                    if run.bold: para_is_bold = True
+                    if run.italic: para_is_italic = True
         
         para_props = {
-            'is_bold_present': para_is_bold, 'is_italic_present': para_is_italic,
-            'max_fsize_pt': para_max_fsize_pt, 'font_names_in_para': para_fonts,
+            'max_fsize_pt': para_max_fsize_pt,
             'alignment': para_align,
+            'font_names_in_para': para_fonts, # For logging
+            'is_bold_present': para_is_bold,   # For logging
+            'is_italic_present': para_is_italic # For logging
         }
-        # Log props only when checking, to reduce verbosity
-        # logger.debug(f"  Para {i} Props: SizePt={para_max_fsize_pt:.1f}, Fonts={para_fonts}, Align={para_align}, Bold={para_is_bold}, Italic={para_is_italic}")
-
+        
         is_chapter, ch_reason = False, "Chapter criteria not met or disabled"
-        if ch_criteria and ch_criteria.get('font_names') is not None and ch_criteria.get('min_font_size') is not None:
-             is_chapter, ch_reason = _matches_criteria_docx(cleaned_text, para_props, ch_criteria, "Chapter")
+        # Check if ch_criteria is not empty and has the required keys
+        if ch_criteria and ch_criteria.get('min_font_size') is not None and ch_criteria.get('alignment_centered') is True:
+             logger.debug(f"  Para {i} Checking for CHAPTER. Text: '{cleaned_text[:30]}...' Props: SizePt={para_max_fsize_pt:.1f}, Align={para_align}")
+             is_chapter, ch_reason = _matches_criteria_docx_font_size_and_centered(cleaned_text, para_props, ch_criteria, "Chapter")
         
         if is_chapter:
             current_chapter_title = cleaned_text
-            current_sub_chapter_title = DEFAULT_SUBCHAPTER_TITLE_FALLBACK # Reset
-            logger.info(f"  ==> Para {i} Classified as CHAPTER: '{cleaned_text[:50]}'")
+            current_sub_chapter_title = DEFAULT_SUBCHAPTER_TITLE_FALLBACK
+            logger.info(f"  ==> Para {i} Classified as CHAPTER: '{cleaned_text[:50]}' (Reason: {ch_reason})")
         else:
-            is_sub_chapter, sch_reason = False, "Sub-chapter criteria not met, disabled, or not chapter"
-            if sch_criteria and sch_criteria.get('font_names') is not None and sch_criteria.get('min_font_size') is not None:
-                is_sub_chapter, sch_reason = _matches_criteria_docx(cleaned_text, para_props, sch_criteria, "Sub-Chapter")
+            is_sub_chapter, sch_reason = False, "Sub-chapter criteria not met, disabled, or already chapter"
+            # Check if sch_criteria is not empty and has the required keys
+            if sch_criteria and sch_criteria.get('min_font_size') is not None and sch_criteria.get('alignment_centered') is True:
+                # Ensure sub-chapter font size is distinct if chapter detection is also active
+                if ch_criteria.get('min_font_size') is None or sch_criteria['min_font_size'] < ch_criteria.get('min_font_size', float('inf')):
+                    logger.debug(f"  Para {i} Checking for SUB-CHAPTER. Text: '{cleaned_text[:30]}...' Props: SizePt={para_max_fsize_pt:.1f}, Align={para_align}")
+                    is_sub_chapter, sch_reason = _matches_criteria_docx_font_size_and_centered(cleaned_text, para_props, sch_criteria, "Sub-Chapter")
+                else:
+                    sch_reason = "Sub-ch min_font_size not distinct from ch min_font_size."
+                    logger.debug(f"  Para {i} Sub-ch check skipped: {sch_reason}. Text: '{cleaned_text[:30]}...'")
             
             if is_sub_chapter:
                 current_sub_chapter_title = cleaned_text
-                logger.info(f"  ==> Para {i} Classified as SUB-CHAPTER: '{cleaned_text[:50]}'")
-            # else: # Only log if it was specifically checked for sub-chapter and failed
-                # if sch_criteria and sch_criteria.get('font_names') is not None and sch_criteria.get('min_font_size') is not None:
+                logger.info(f"  ==> Para {i} Classified as SUB-CHAPTER: '{cleaned_text[:50]}' (Reason: {sch_reason})")
+            # else: # Log body only if it failed a specific check it was eligible for
+                # if (ch_criteria and not is_chapter and ch_criteria.get('min_font_size') is not None) or \
+                #    (sch_criteria and not is_sub_chapter and sch_criteria.get('min_font_size') is not None) :
                     # logger.debug(f"  Para {i} Classified as BODY. (Ch fail: '{ch_reason}', SubCh fail: '{sch_reason}') Text: '{cleaned_text[:30]}...'")
-
 
         try:
             sentences = nltk.sent_tokenize(cleaned_text)
@@ -157,5 +148,20 @@ def extract_sentences_with_structure(*, file_content: bytes, filename: str, head
     if not file_ext: raise ValueError("Invalid/extensionless filename")
     if file_ext != "docx": raise ValueError(f"Unsupported file type: {file_ext}. Expected DOCX.")
             
-    output_data = _extract_docx(data=file_content, heading_criteria=heading_criteria)
+    # Ensure the criteria dicts passed to _extract_docx are clean and only contain what's intended
+    clean_ch_criteria = {}
+    if heading_criteria.get("chapter"):
+        clean_ch_criteria['min_font_size'] = heading_criteria["chapter"].get('min_font_size')
+        if heading_criteria["chapter"].get('alignment_centered') is True: # Check it's explicitly True
+            clean_ch_criteria['alignment_centered'] = True
+    
+    clean_sch_criteria = {}
+    if heading_criteria.get("sub_chapter"): 
+        clean_sch_criteria['min_font_size'] = heading_criteria["sub_chapter"].get('min_font_size')
+        if heading_criteria["sub_chapter"].get('alignment_centered') is True:
+            clean_sch_criteria['alignment_centered'] = True
+            
+    final_criteria = {"chapter": clean_ch_criteria, "sub_chapter": clean_sch_criteria}
+    
+    output_data = _extract_docx(data=file_content, heading_criteria=final_criteria)
     return output_data
