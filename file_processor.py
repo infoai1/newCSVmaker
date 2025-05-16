@@ -43,11 +43,10 @@ def _extract_docx(data: bytes, heading_criteria: Dict[str, Dict[str, Any]]) -> L
     except Exception as e: logger.error(f"Failed to open DOCX stream: {e}", exc_info=True); return []
 
     res: List[Tuple[str, str, bool, bool, Optional[str], Optional[str]]] = []
-    # These track the context established by the LAST heading paragraph encountered
-    active_chapter_heading_text = DEFAULT_CHAPTER_TITLE_FALLBACK
-    active_subchapter_heading_text = DEFAULT_SUBCHAPTER_TITLE_FALLBACK 
+    active_chapter_context = DEFAULT_CHAPTER_TITLE_FALLBACK
+    active_subchapter_context = DEFAULT_SUBCHAPTER_TITLE_FALLBACK 
 
-    logger.info(f"--- Starting DOCX Extraction (Experimental Sub-Sentence Split) ---")
+    logger.info(f"--- Starting DOCX Extraction (Attempting sub-sentence split for embedded headings) ---")
 
     for i, para in enumerate(doc.paragraphs, 1):
         para_text_cleaned = _clean(para.text) 
@@ -64,29 +63,28 @@ def _extract_docx(data: bytes, heading_criteria: Dict[str, Dict[str, Any]]) -> L
         para_props = {'max_fsize_pt': para_max_fsize_pt, 'alignment': para_align}
         
         # Determine if this paragraph AS A WHOLE is a chapter or sub-chapter heading
-        # These flags and texts are specific TO THIS PARAGRAPH if it's a heading.
-        current_para_is_chapter_heading = False
-        current_para_is_subchapter_heading = False
-        # If this paragraph is a heading, its text is stored here. Otherwise, these are None.
-        this_para_ch_heading_text_if_any: Optional[str] = None
-        this_para_subch_heading_text_if_any: Optional[str] = None
+        para_is_chapter_heading_flag = False
+        para_is_subchapter_heading_flag = False
+        
+        # These store the text of the heading IF this paragraph itself IS that heading
+        text_if_para_is_chapter_heading: Optional[str] = None
+        text_if_para_is_subchapter_heading: Optional[str] = None
 
         is_ch, _ = _matches_criteria_docx_font_size_and_centered(para_text_cleaned, para_props, ch_criteria, "Chapter")
         if is_ch:
-            current_para_is_chapter_heading = True
-            this_para_ch_heading_text_if_any = para_text_cleaned
-            active_chapter_heading_text = para_text_cleaned # Update active context
-            active_subchapter_heading_text = DEFAULT_SUBCHAPTER_TITLE_FALLBACK # Reset sub-chapter on new chapter
+            para_is_chapter_heading_flag = True
+            text_if_para_is_chapter_heading = para_text_cleaned
+            active_chapter_context = para_text_cleaned 
+            active_subchapter_context = DEFAULT_SUBCHAPTER_TITLE_FALLBACK 
             logger.info(f"  Para {i} IS CHAPTER: '{para_text_cleaned[:50]}'")
-        else:
+        else: # Only check for sub-chapter if it's not a chapter
             is_sch, _ = _matches_criteria_docx_font_size_and_centered(para_text_cleaned, para_props, sch_criteria, "Sub-Chapter")
-            # A paragraph is a sub-chapter only if it's not a chapter and meets sub-chapter criteria
             if is_sch and (ch_criteria.get('min_font_size') is None or sch_criteria.get('min_font_size',0) < ch_criteria.get('min_font_size', float('inf'))):
-                current_para_is_subchapter_heading = True
-                this_para_subch_heading_text_if_any = para_text_cleaned
-                active_subchapter_heading_text = para_text_cleaned # Update active context
+                para_is_subchapter_heading_flag = True
+                text_if_para_is_subchapter_heading = para_text_cleaned
+                active_subchapter_context = para_text_cleaned 
                 logger.info(f"  Para {i} IS SUB-CHAPTER: '{para_text_cleaned[:50]}'")
-            # If not a chapter and not a sub-chapter, it's body text. It inherits active_chapter_heading_text and active_subchapter_heading_text.
+            # If not chapter and not sub-chapter, it's body text; it inherits active_chapter_context and active_subchapter_context
 
         try:
             nltk_sentences = nltk.sent_tokenize(para_text_cleaned)
@@ -95,114 +93,85 @@ def _extract_docx(data: bytes, heading_criteria: Dict[str, Dict[str, Any]]) -> L
             logger.error(f"NLTK tokenization fail P{i}: {e}",exc_info=True); nltk_sentences=[para_text_cleaned] if para_text_cleaned else []
 
         sent_idx_counter = 0
-        for orig_sent_idx, sent_text in enumerate(nltk_sentences):
-            clean_sent = sent_text.strip()
-            if not clean_sent: continue
+        for orig_sent_idx, sent_text_from_nltk in enumerate(nltk_sentences):
+            current_segment = sent_text_from_nltk.strip()
+            if not current_segment: continue
 
-            sentences_to_add = [] # List to hold potentially split sentences
+            # Determine the context for this NLTK sentence before any potential split
+            # If the paragraph itself was a heading, that's the primary context.
+            # Otherwise, it inherits from the active contexts.
+            current_sent_ch_context = text_if_para_is_chapter_heading if para_is_chapter_heading_flag else active_chapter_context
+            current_sent_subch_context = text_if_para_is_subchapter_heading if para_is_subchapter_heading_flag else active_subchapter_context
 
-            # --- Experimental Sub-Sentence Splitting Logic ---
-            # If this paragraph was identified as a sub-chapter heading,
-            # AND the current NLTK sentence contains that sub-chapter heading's text,
-            # AND that heading text is not at the very beginning of the NLTK sentence,
-            # then we attempt to split it.
-            if current_para_is_subchapter_heading and this_para_subch_heading_text_if_any:
+
+            # --- Experimental Sub-Sentence Split Logic ---
+            # If this paragraph ITSELF was identified as a sub-chapter heading (e.g., para_text_cleaned IS "Some Sayings of the Prophet")
+            # AND the NLTK sentence `current_segment` contains this heading text but not at the start.
+            # This means NLTK combined pre-heading text with the heading text within this sub-chapter paragraph.
+            if para_is_subchapter_heading_flag and text_if_para_is_subchapter_heading:
+                # `text_if_para_is_subchapter_heading` is the actual heading text of this paragraph.
+                heading_text_to_find = text_if_para_is_subchapter_heading
+                
                 try:
-                    # Find the start of the sub-chapter heading text within the NLTK sentence
-                    # Use regex to find the exact phrase, case-insensitively for robustness,
-                    # but the split should use the original casing.
-                    # The heading text itself might have punctuation, so escape it for regex.
-                    heading_pattern = re.escape(this_para_subch_heading_text_if_any)
-                    match = re.search(heading_pattern, clean_sent, re.IGNORECASE)
+                    # Find where the actual heading text starts within the current NLTK sentence
+                    # Using a simple find; regex might be more robust if heading text has special chars
+                    # For this to work, heading_text_to_find must be a simple string without regex metacharacters
+                    # or they should be escaped if using re.search.
+                    # We assume clean_sent is the NLTK sentence.
+                    
+                    # Ensure we are looking for the exact heading text associated with THIS paragraph
+                    # if it was identified as a sub_chapter_heading
+                    
+                    # If the current segment (NLTK sentence) contains the specific sub-chapter heading text of its parent paragraph
+                    # AND that sub-chapter heading text is not at the beginning of the segment:
+                    idx = current_segment.find(heading_text_to_find)
 
-                    if match:
-                        start_index = match.start()
-                        if start_index > 0: # Heading found, but not at the start of the NLTK sentence
-                            pre_heading_text = clean_sent[:start_index].strip()
-                            actual_heading_and_post_text = clean_sent[start_index:].strip()
-                            
-                            if pre_heading_text:
-                                logger.debug(f"    Sub-splitting P{i}.s{orig_sent_idx}: PRE-TEXT='{pre_heading_text[:30]}...'")
-                                # This pre-text belongs to the context *before* this sub-chapter was introduced.
-                                # If this sub-chapter started a new chapter, then sub-ch context is default.
-                                # If this sub-chapter is under the current chapter, then its pre-text inherits previous_subchapter_context
-                                sentences_to_add.append({
-                                    "text": pre_heading_text, "marker_suffix": f"{sent_idx_counter}_pre",
-                                    "is_ch_hd_para": False, "is_subch_hd_para": False, # This part is not a heading itself
-                                    "ch_ctx": active_chapter_heading_text, 
-                                    "subch_ctx": DEFAULT_SUBCHAPTER_TITLE_FALLBACK if current_para_is_chapter_heading else previous_subchapter_context_before_this_subch_para_was_defined
-                                })
-                                sent_idx_counter +=1
-                            
-                            if actual_heading_and_post_text:
-                                sentences_to_add.append({
-                                    "text": actual_heading_and_post_text, "marker_suffix": f"{sent_idx_counter}",
-                                    "is_ch_hd_para": current_para_is_chapter_heading, # Could be True if a CH is also a SCH
-                                    "is_subch_hd_para": True, # This part contains/is the sub_ch heading
-                                    "ch_ctx": active_chapter_heading_text,
-                                    "subch_ctx": this_para_subch_heading_text_if_any 
-                                })
-                                sent_idx_counter +=1
-                        else: # Heading is at the start of the NLTK sentence, no pre-text to split
-                            sentences_to_add.append({
-                                "text": clean_sent, "marker_suffix": f"{sent_idx_counter}",
-                                "is_ch_hd_para": current_para_is_chapter_heading,
-                                "is_subch_hd_para": current_para_is_subchapter_heading,
-                                "ch_ctx": active_chapter_heading_text,
-                                "subch_ctx": active_subchapter_heading_text 
-                            })
+                    if idx > 0: # Heading found, but not at the start of this NLTK sentence
+                        pre_text = current_segment[:idx].strip()
+                        heading_onward_text = current_segment[idx:].strip()
+                        
+                        if pre_text:
+                            logger.debug(f"    Sub-splitting P{i}.s{orig_sent_idx}: PRE-TEXT='{pre_text[:30]}...' for sub_ch '{heading_text_to_find}'")
+                            # This pre-text is still part of the same sub-chapter paragraph.
+                            # Its context is the sub-chapter itself.
+                            res.append((
+                                pre_text, 
+                                f"{marker_base}.s{sent_idx_counter}_pre",
+                                False, # This fragment is not a heading paragraph itself
+                                True,  # Belongs to a sub-chapter paragraph
+                                current_sent_ch_context, 
+                                current_sent_subch_context # which is heading_text_to_find
+                            ))
                             sent_idx_counter +=1
-                    else: # Heading text not found in this NLTK sentence (shouldn't happen if para IS heading)
-                        sentences_to_add.append({
-                            "text": clean_sent, "marker_suffix": f"{sent_idx_counter}",
-                            "is_ch_hd_para": current_para_is_chapter_heading,
-                            "is_subch_hd_para": current_para_is_subchapter_heading,
-                            "ch_ctx": active_chapter_heading_text,
-                            "subch_ctx": active_subchapter_heading_text
-                        })
-                        sent_idx_counter +=1
-                except Exception as e_split:
-                    logger.error(f"Error during experimental sub-sentence split for P{i}: {e_split}", exc_info=True)
-                    # Fallback to adding the original sentence if split fails
-                    sentences_to_add.append({
-                        "text": clean_sent, "marker_suffix": f"{sent_idx_counter}",
-                        "is_ch_hd_para": current_para_is_chapter_heading,
-                        "is_subch_hd_para": current_para_is_subchapter_heading,
-                        "ch_ctx": active_chapter_heading_text,
-                        "subch_ctx": active_subchapter_heading_text
-                    })
-                    sent_idx_counter +=1
-            else: # Not a sub-chapter paragraph, or no sub-chapter heading text to split by
-                 sentences_to_add.append({
-                    "text": clean_sent, "marker_suffix": f"{sent_idx_counter}",
-                    "is_ch_hd_para": current_para_is_chapter_heading, # True if the whole para was a CH
-                    "is_subch_hd_para": current_para_is_subchapter_heading, # True if the whole para was a SCH
-                    "ch_ctx": active_chapter_heading_text, # Context from last CH heading
-                    "subch_ctx": active_subchapter_heading_text # Context from last SCH heading (or default if reset by new CH)
-                })
-                 sent_idx_counter += 1
-
-            for s_data in sentences_to_add:
-                res.append((
-                    s_data["text"], 
-                    f"{marker_base}.{s_data['marker_suffix']}", 
-                    s_data["is_ch_hd_para"],
-                    s_data["is_subch_hd_para"],
-                    s_data["ch_ctx"], 
-                    s_data["subch_ctx"]
-                ))
-        
-        # Update `previous_subchapter_context_before_this_subch_para_was_defined` for the next paragraph
-        # This needs to be the context that was active *before* this paragraph might have defined a new one.
-        # This is complex because `active_subchapter_heading_text` gets updated if para IS subch.
-        # Let's simplify: the "previous" context is simply what `active_subchapter_heading_text` was at the start of this para loop.
-        # However, `active_subchapter_heading_text` is updated mid-loop.
-        # The state `active_subchapter_heading_text` already carries the correct "previous" or "current" context for body text.
-        # The experimental split logic needs to be careful with `previous_subchapter_context_before_this_subch_para_was_defined`.
-        # For now, the split logic is simplified and might not perfectly handle all inherited contexts for pre-text.
-        # The most important part is splitting the sentence. The chunker will then sort out contexts.
-        # The `active_chapter_heading_text` and `active_subchapter_heading_text` are updated correctly
-        # if the paragraph itself was a heading.
+                        
+                        if heading_onward_text:
+                            res.append((
+                                heading_onward_text,
+                                f"{marker_base}.s{sent_idx_counter}",
+                                False, 
+                                True, # This part IS the sub-chapter heading text (or starts with it)
+                                current_sent_ch_context,
+                                current_sent_subch_context # which is heading_text_to_find
+                            ))
+                            sent_idx_counter +=1
+                        continue # Skip adding the original unsplit NLTK sentence
+                except Exception as e_split_sub:
+                    logger.error(f"Error during sub-sentence split for sub_ch P{i}: {e_split_sub}", exc_info=True)
+                    # Fallback to original sentence if split fails
+            
+            # If no split occurred, add the sentence as is
+            res.append((
+                current_segment, 
+                f"{marker_base}.s{sent_idx_counter}", 
+                para_is_chapter_heading_flag,    # True if the original paragraph was a chapter heading
+                para_is_subchapter_heading_flag, # True if the original paragraph was a sub-chapter heading
+                current_sent_ch_context,         # Chapter context for this sentence
+                current_sent_subch_context       # Sub-chapter context for this sentence
+            ))
+            sent_idx_counter += 1
+            
+        # After processing all sentences of a paragraph, the active_chapter/subchapter_context
+        # will have been updated if this paragraph was a heading.
 
     logger.info(f"--- DOCX Extraction Finished. Items: {len(res)} ---")
     return res
