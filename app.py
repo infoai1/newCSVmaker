@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 import logging
-
+import chunk_structured_sentences from chunker
 
 # --- Setup Logging and Helpers ---
 logging.basicConfig(
