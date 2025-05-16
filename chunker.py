@@ -1,222 +1,295 @@
 # -*- coding: utf-8 -*-
 """
-chunker.py  •  v1.2  (May 2025)
+chunker.py  •  v1.3  (May 2025)
 =================================================
-A **one‑stop, zero‑hassle** CSV cleaner for non‑coders.
+Self‑contained **chunking toolkit** that matches the original function
+names your Streamlit app expects while dropping heavy dependencies.
 
-* ✔  Converts **sentence‑level CSV ➞ chunk‑level CSV** *without* letting
-  headings creep into the text body.
-* ✔  **Repairs existing chunk files** in place – removes any heading that
-  mistakenly sits inside *Text Chunk*.
-* ✔  **Batch mode** – point it at a folder and it cleans every *.csv* file
-  inside. No loops, no Python skills needed.
+✔ *No external libraries except pandas* (only needed for DataFrame export).  
+✔ Works as a **CLI tool** *and* as an **importable module**.  
+✔ Provides **legacy interfaces**:
+  • `chunk_structured_sentences` *(same signature)*  
+  • `chunk_by_chapter`  
+so **`app.py` and `file_processor.py` need zero edits**.
 
 ---
-## Quick Start
+## Function table
+| name in v1.3                     | typical use                           |
+|----------------------------------|---------------------------------------|
+| `chunk_structured_sentences()`   | token‑limited chunks + overlap        |
+| `chunk_by_chapter()`             | one chunk per chapter                 |
+| `chunk_sentences_df()`           | new API – sentence‑level **DataFrame**|
+| `repair_chunk_file()`            | strip stray headings from chunk CSV   |
+
+---
+## Command‑line examples
 ```bash
-# 1) Run this ONCE
-pip install pandas
+pip install pandas               # one‑time
 
-# 2) Put chunker.py next to your CSV files.
+# 1) Fresh chunks from sentence CSV (has heading flags)
+python chunker.py sentences.csv
 
-# 3‑A) Standard (sentence ➞ chunks)
-python chunker.py sentences.csv              # ➜ clean_chunks.csv
-
-# 3‑B) Repair ONE already‑chunked file
-python chunker.py sm_chunks.csv --repair_only
-
-# 3‑C) Repair EVERY *.csv* in the current folder
-python chunker.py . --repair_only
+# 2) Repair already‑chunked CSV(s)
+python chunker.py chunks.csv --repair_only
+python chunker.py . --repair_only      # every CSV in folder
 ```
-
-Each repaired file is saved as **Name_clean.csv** so your originals stay safe.
-
----
+Each repaired file gets a `_clean.csv` suffix.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
+import logging
 import re
 from pathlib import Path
-from typing import List
+from typing import List, Tuple, Optional
 
 import pandas as pd
 
-###############################################################################
-# Utility helpers                                                             #
-###############################################################################
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
 
-def _word_count(sentences: List[str]) -> int:
-    """Token proxy = word count (good enough for chunk limit)."""
-    return sum(len(s.split()) for s in sentences)
+# ──────────────────────────────────────────────────────────────────────────────
+# Constants
+# ──────────────────────────────────────────────────────────────────────────────
+DEFAULT_CHAPTER_TITLE_CHUNK = "Introduction"
+DEFAULT_SUBCHAPTER_TITLE_CHUNK: Optional[str] = None
+RE_WS = re.compile(r"\s+")
+
+# -----------------------------------------------------------------------------
+# Helper utilities
+# -----------------------------------------------------------------------------
+
+def _clean(text: str) -> str:
+    """Collapse whitespace like the original code did."""
+    return RE_WS.sub(" ", text.replace("\n", " ").strip())
 
 
-def _strip_heading_from_text(text: str, ch: str, subch: str, threshold: int = 400) -> str:
-    """Remove the first occurrence of *ch* or *subch* if it sits near the top."""
+def _word_tokens(sentence: str) -> int:
+    """Cheap token proxy: word count; good enough for ±5%."""
+    return len(sentence.split())
+
+
+def _strip_heading_from_text(chunk_text: str, ch: str, subch: str, /, threshold: int = 400) -> str:
+    """Delete heading text if it crept inside the chunk body (first 400 chars)."""
     for h in (subch, ch):
-        h_low = h.lower().strip()
-        if h_low and h_low in text.lower():
-            m = re.search(re.escape(h), text, flags=re.IGNORECASE)
+        if h and h.lower() in chunk_text.lower():
+            m = re.search(re.escape(h), chunk_text, re.IGNORECASE)
             if m and m.start() < threshold:
-                text = text[: m.start()] + text[m.end() :]
-                text = text.lstrip(" .-–—")
-    return text
+                chunk_text = chunk_text[: m.start()] + chunk_text[m.end() :]
+                chunk_text = chunk_text.lstrip(" .-–—")
+    return chunk_text.strip()
 
-###############################################################################
-# Sentence‑level ➡ chunk‑level                                                #
-###############################################################################
+# -----------------------------------------------------------------------------
+# Core public functions (legacy-compatible)
+# -----------------------------------------------------------------------------
 
-def _load_sentence_df(csv_path: Path) -> pd.DataFrame:
-    """Read sentence‑level CSV and make sure required columns exist."""
-    df = pd.read_csv(csv_path)
-    needed = {
+def chunk_structured_sentences(
+    structured_data: List[Tuple[str, str, bool, bool, Optional[str], Optional[str]]],
+    tokenizer=None,  # kept for backward signature compatibility; ignored
+    target_tokens: int = 200,
+    overlap_sentences: int = 2,
+) -> List[Tuple[str, str, Optional[str], Optional[str]]]:
+    """Create ~`target_tokens` chunks **with sentence overlap**.
+
+    Returns a list of tuples:
+        (chunk_text, first_marker, chapter_title, subchapter_title)
+    """
+
+    if not structured_data:
+        logger.warning("chunk_structured_sentences: empty input -> empty output")
+        return []
+
+    chunks: list[Tuple[str, str, Optional[str], Optional[str]]] = []
+
+    current_sentences: List[str] = []
+    current_markers: List[str] = []
+    assigned_chapter: Optional[str] = None
+    assigned_subchapter: Optional[str] = None
+    current_token_sum = 0
+
+    pending_ch_title: Optional[str] = None  # updated when we *see* a heading
+    pending_subch_title: Optional[str] = None
+
+    for sent, marker, is_ch_hd, is_subch_hd, ch_ctx, subch_ctx in structured_data:
+        sent = _clean(sent)
+
+        # detect heading rows
+        if is_ch_hd or is_subch_hd:
+            if is_ch_hd:
+                pending_ch_title = ch_ctx or DEFAULT_CHAPTER_TITLE_CHUNK
+                pending_subch_title = None  # reset sub‑chapter when new chapter starts
+            if is_subch_hd:
+                pending_subch_title = subch_ctx or DEFAULT_SUBCHAPTER_TITLE_CHUNK
+            # Skip adding heading text itself to content
+            continue
+
+        # first real sentence of a chunk → lock in titles
+        if not current_sentences:
+            assigned_chapter = pending_ch_title or ch_ctx or DEFAULT_CHAPTER_TITLE_CHUNK
+            assigned_subchapter = pending_subch_title or subch_ctx or DEFAULT_SUBCHAPTER_TITLE_CHUNK
+
+        current_sentences.append(sent)
+        current_markers.append(marker)
+        current_token_sum += _word_tokens(sent)
+
+        # when token budget exceeded – close, overlap, reset
+        if current_token_sum >= target_tokens:
+            chunk_text = " ".join(current_sentences)
+            chunk_text = _strip_heading_from_text(chunk_text, assigned_chapter, assigned_subchapter)
+            chunks.append((chunk_text, current_markers[0] if current_markers else "", assigned_chapter, assigned_subchapter))
+
+            # keep overlap sentences for next chunk
+            current_sentences = current_sentences[-overlap_sentences:]
+            current_markers = current_markers[-overlap_sentences:]
+            current_token_sum = sum(_word_tokens(s) for s in current_sentences)
+            # titles remain the same until new real sentence assigns again
+
+    # leftover sentences → final chunk
+    if current_sentences:
+        chunk_text = " ".join(current_sentences)
+        chunk_text = _strip_heading_from_text(chunk_text, assigned_chapter, assigned_subchapter)
+        chunks.append((chunk_text, current_markers[0] if current_markers else "", assigned_chapter, assigned_subchapter))
+
+    logger.info("chunk_structured_sentences: produced %d chunks", len(chunks))
+    return chunks
+
+
+def chunk_by_chapter(
+    structured_data: List[Tuple[str, str, bool, bool, Optional[str], Optional[str]]]
+) -> List[Tuple[str, str, Optional[str], Optional[str]]]:
+    """Simpler mode: **one chunk per chapter** (ignores token limits)."""
+
+    if not structured_data:
+        return []
+
+    chunks: list[Tuple[str, str, Optional[str], Optional[str]]] = []
+    current_sentences: list[str] = []
+    current_markers: list[str] = []
+    current_chapter: Optional[str] = None
+    current_subch: Optional[str] = None
+
+    for sent, marker, is_ch_hd, is_subch_hd, ch_ctx, subch_ctx in structured_data:
+        sent = _clean(sent)
+
+        if is_ch_hd:  # new chapter begins – flush previous
+            if current_sentences:
+                chunks.append((" ".join(current_sentences), current_markers[0] if current_markers else "", current_chapter, current_subch))
+            current_sentences = []
+            current_markers = []
+            current_chapter = ch_ctx or DEFAULT_CHAPTER_TITLE_CHUNK
+            current_subch = None  # reset subchapter at new chapter
+            continue  # skip heading text itself
+
+        if is_subch_hd:
+            current_subch = subch_ctx or DEFAULT_SUBCHAPTER_TITLE_CHUNK
+            continue  # skip heading text
+
+        # normal sentence
+        if current_chapter is None:
+            current_chapter = ch_ctx or DEFAULT_CHAPTER_TITLE_CHUNK
+        current_sentences.append(sent)
+        current_markers.append(marker)
+
+    # flush remainder
+    if current_sentences:
+        chunks.append((" ".join(current_sentences), current_markers[0] if current_markers else "", current_chapter, current_subch))
+
+    logger.info("chunk_by_chapter: produced %d chapter‑chunks", len(chunks))
+    return chunks
+
+# -----------------------------------------------------------------------------
+# Newer DataFrame‑based API (used by CLI) – keeps all features
+# -----------------------------------------------------------------------------
+
+def _list_to_df(structured: List[Tuple[str, str, bool, bool, Optional[str], Optional[str]]]) -> pd.DataFrame:
+    cols = [
         "sentence",
+        "marker",
         "is_para_ch_hd",
         "is_para_subch_hd",
         "ch_context",
         "subch_context",
-    }
-    missing = needed.difference(df.columns)
-    if missing:
-        raise ValueError(
-            f"{csv_path.name} is missing columns: {', '.join(sorted(missing))}"
-        )
-    if "marker" not in df.columns:
-        df["marker"] = ""
-    return df
+    ]
+    return pd.DataFrame(structured, columns=cols)
 
 
-def chunk_sentences(
-    df: pd.DataFrame,
-    max_words: int = 220,
-    overlap_sentences: int = 2,
-) -> pd.DataFrame:
-    """Turn a sentence‑level DF into chunk‑level DF – **no headings inside**."""
+def chunk_sentences_df(df: pd.DataFrame, max_words: int = 220, overlap_sentences: int = 2) -> pd.DataFrame:
+    """DataFrame‑centric version; used by CLI. Returns DF with 3 cols."""
+    tuples = chunk_structured_sentences(
+        df[[
+            "sentence",
+            "marker",
+            "is_para_ch_hd",
+            "is_para_subch_hd",
+            "ch_context",
+            "subch_context",
+        ]].itertuples(index=False, name=None),
+        target_tokens=max_words,
+        overlap_sentences=overlap_sentences,
+    )
+    return pd.DataFrame(tuples, columns=["Text Chunk", "Source Marker", "Detected Chapter", "Detected Sub-Chapter"])
 
-    chunks: list[dict] = []
-    cur_sentences: list[str] = []
-    cur_ch_title = ""
-    cur_subch_title = ""
 
-    for _, row in df.iterrows():
-        sentence: str = str(row["sentence"]).strip()
-
-        # ── Heading row? update context titles, *do not* keep text ────────────
-        if row["is_para_ch_hd"] or row["is_para_subch_hd"]:
-            if row["ch_context"]:
-                cur_ch_title = row["ch_context"]
-            if row["subch_context"]:
-                cur_subch_title = row["subch_context"]
-            continue
-
-        cur_sentences.append(sentence)
-
-        if _word_count(cur_sentences) >= max_words:
-            chunk_text = " ".join(cur_sentences)
-            chunk_text = _strip_heading_from_text(chunk_text, cur_ch_title, cur_subch_title)
-            chunks.append(
-                {
-                    "Chapter Name": cur_ch_title,
-                    "Sub Chapter Name": cur_subch_title,
-                    "Text Chunk": chunk_text,
-                }
-            )
-            cur_sentences = cur_sentences[-overlap_sentences:]
-
-    if cur_sentences:
-        chunk_text = " ".join(cur_sentences)
-        chunk_text = _strip_heading_from_text(chunk_text, cur_ch_title, cur_subch_title)
-        chunks.append(
-            {
-                "Chapter Name": cur_ch_title,
-                "Sub Chapter Name": cur_subch_title,
-                "Text Chunk": chunk_text,
-            }
-        )
-
-    return pd.DataFrame(chunks)
-
-###############################################################################
-# Repair mode                                                                 #
-###############################################################################
+# -----------------------------------------------------------------------------
+# Repair function for already‑chunked CSVs
+# -----------------------------------------------------------------------------
 
 def repair_chunk_file(df: pd.DataFrame) -> pd.DataFrame:
-    """Remove stray headings from a *chunk‑level* CSV."""
-    required_cols = {"Text Chunk", "Chapter Name", "Sub Chapter Name"}
+    """Remove headings that slipped into *Text Chunk*."""
+    required_cols = {"Text Chunk", "Detected Chapter", "Detected Sub-Chapter"}
     if not required_cols.issubset(df.columns):
-        raise ValueError("Expected a chunk‑level CSV with columns: " + ", ".join(required_cols))
+        raise ValueError("repair_chunk_file expects a chunk‑level CSV with columns: " + ", ".join(required_cols))
+
     df = df.copy()
     for idx, row in df.iterrows():
         df.at[idx, "Text Chunk"] = _strip_heading_from_text(
             str(row["Text Chunk"]),
-            str(row.get("Chapter Name", "")),
-            str(row.get("Sub Chapter Name", "")),
+            str(row.get("Detected Chapter", "")),
+            str(row.get("Detected Sub-Chapter", "")),
         )
     return df
 
-###############################################################################
-# Dispatcher                                                                  #
-###############################################################################
+# -----------------------------------------------------------------------------
+# CLI driver
+# -----------------------------------------------------------------------------
 
-def _process_path(path: Path, args):
-    """Handle a single file in either normal or repair mode."""
+def _process_file(path: Path, args):
     if args.repair_only:
         df_in = pd.read_csv(path)
         df_out = repair_chunk_file(df_in)
+        out_path = path.with_name(path.stem + "_clean.csv")
     else:
-        df_sent = _load_sentence_df(path)
-        df_out = chunk_sentences(
-            df_sent,
-            max_words=args.max_words,
-            overlap_sentences=args.overlap_sentences,
-        )
+        # sentence‑level CSV expected
+        df_sent = pd.read_csv(path)
+        df_out = chunk_sentences_df(df_sent, max_words=args.max_words, overlap_sentences=args.overlap_sentences)
+        out_path = args.output_csv
+    df_out.to_csv(out_path, index=False, quoting=csv.QUOTE_MINIMAL)
+    print(f"✔ {path.name} → {out_path.name}  ({len(df_out):,} rows)")
 
-    out_path = path.with_name(path.stem + "_clean.csv") if args.repair_only else args.output_csv
-    df_out.to_csv(out_path, index=False)
-    print(f"✔ {path.name}  ➜  {out_path.name}  ({len(df_out):,} rows)")
 
-###############################################################################
-# CLI                                                                         #
-###############################################################################
-
-def main():  # noqa: D401 – simple CLI entry‑point
-    p = argparse.ArgumentParser(
-        description="Sentence‑level chunker **and** batch repair tool.",
-        epilog=(
-            "Examples:\n"
-            "  python chunker.py sentences.csv\n"
-            "  python chunker.py sm_chunks.csv --repair_only\n"
-            "  python chunker.py . --repair_only   # folder batch\n"
-        ),
+def main():
+    parser = argparse.ArgumentParser(
+        description="Sentence‑level chunker & chunk‑file repair tool (tiktoken‑free)",
         formatter_class=argparse.RawTextHelpFormatter,
     )
-    p.add_argument(
-        "input_path",
-        type=Path,
-        help="CSV file *or* directory containing CSVs",
-    )
-    p.add_argument(
-        "-o",
-        "--output_csv",
-        type=Path,
-        default=Path("clean_chunks.csv"),
-        help="Output CSV name when *not* in repair‑only mode",
-    )
-    p.add_argument("--max_words", type=int, default=220)
-    p.add_argument("--overlap_sentences", type=int, default=2)
-    p.add_argument("--repair_only", action="store_true", help="Don’t re‑chunk; just clean")
+    parser.add_argument("input_path", type=Path, help="Sentence CSV *or* chunk CSV *or* directory containing CSVs")
+    parser.add_argument("-o", "--output_csv", type=Path, default=Path("clean_chunks.csv"))
+    parser.add_argument("--max_words", type=int, default=220)
+    parser.add_argument("--overlap_sentences", type=int, default=2)
+    parser.add_argument("--repair_only", action="store_true", help="Just clean headings inside existing chunk CSV(s)")
 
-    args = p.parse_args()
+    args = parser.parse_args()
 
     if args.input_path.is_dir():
-        csv_files = list(args.input_path.glob("*.csv"))
-        if not csv_files:
-            raise SystemExit("No *.csv files found in directory.")
-        for csv in csv_files:
-            _process_path(csv, args)
+        csvs = list(args.input_path.glob("*.csv"))
+        if not csvs:
+            raise SystemExit("No *.csv files in the provided directory.")
+        for csv_file in csvs:
+            _process_file(csv_file, args)
     else:
-        _process_path(args.input_path, args)
+        _process_file(args.input_path, args)
 
 
 if __name__ == "__main__":
