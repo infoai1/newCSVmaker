@@ -1,296 +1,170 @@
-# -*- coding: utf-8 -*-
-"""
-chunker.py  •  v1.3  (May 2025)
-=================================================
-Self‑contained **chunking toolkit** that matches the original function
-names your Streamlit app expects while dropping heavy dependencies.
-
-✔ *No external libraries except pandas* (only needed for DataFrame export).  
-✔ Works as a **CLI tool** *and* as an **importable module**.  
-✔ Provides **legacy interfaces**:
-  • `chunk_structured_sentences` *(same signature)*  
-  • `chunk_by_chapter`  
-so **`app.py` and `file_processor.py` need zero edits**.
-
----
-## Function table
-| name in v1.3                     | typical use                           |
-|----------------------------------|---------------------------------------|
-| `chunk_structured_sentences()`   | token‑limited chunks + overlap        |
-| `chunk_by_chapter()`             | one chunk per chapter                 |
-| `chunk_sentences_df()`           | new API – sentence‑level **DataFrame**|
-| `repair_chunk_file()`            | strip stray headings from chunk CSV   |
-
----
-## Command‑line examples
-```bash
-pip install pandas               # one‑time
-
-# 1) Fresh chunks from sentence CSV (has heading flags)
-python chunker.py sentences.csv
-
-# 2) Repair already‑chunked CSV(s)
-python chunker.py chunks.csv --repair_only
-python chunker.py . --repair_only      # every CSV in folder
-```
-Each repaired file gets a `_clean.csv` suffix.
-"""
-
-from __future__ import annotations
-
-import argparse
-import csv
+import tiktoken
 import logging
-import re
-from pathlib import Path
 from typing import List, Tuple, Optional
 
-import pandas as pd
-
 logger = logging.getLogger(__name__)
-logger.addHandler(logging.NullHandler())
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Constants
-# ──────────────────────────────────────────────────────────────────────────────
-DEFAULT_CHAPTER_TITLE_CHUNK = "Introduction"
-DEFAULT_SUBCHAPTER_TITLE_CHUNK: Optional[str] = None
-RE_WS = re.compile(r"\s+")
-
-# -----------------------------------------------------------------------------
-# Helper utilities
-# -----------------------------------------------------------------------------
-
-def _clean(text: str) -> str:
-    """Collapse whitespace like the original code did."""
-    return RE_WS.sub(" ", text.replace("\n", " ").strip())
-
-
-def _word_tokens(sentence: str) -> int:
-    """Cheap token proxy: word count; good enough for ±5%."""
-    return len(sentence.split())
-
-
-def _strip_heading_from_text(chunk_text: str, ch: str, subch: str, /, threshold: int = 400) -> str:
-    """Delete heading text if it crept inside the chunk body (first 400 chars)."""
-    for h in (subch, ch):
-        if h and h.lower() in chunk_text.lower():
-            m = re.search(re.escape(h), chunk_text, re.IGNORECASE)
-            if m and m.start() < threshold:
-                chunk_text = chunk_text[: m.start()] + chunk_text[m.end() :]
-                chunk_text = chunk_text.lstrip(" .-–—")
-    return chunk_text.strip()
-
-# -----------------------------------------------------------------------------
-# Core public functions (legacy-compatible)
-# -----------------------------------------------------------------------------
+DEFAULT_CHAPTER_TITLE_CHUNK = "Introduction" 
+DEFAULT_SUBCHAPTER_TITLE_CHUNK = None    
 
 def chunk_structured_sentences(
-    structured_data: List[Tuple[str, str, bool, bool, Optional[str], Optional[str]]],
-    tokenizer=None,  # kept for backward signature compatibility; ignored
+    structured_data: List[Tuple[str, str, bool, bool, Optional[str], Optional[str]]], 
+    # sentence, marker, is_para_ch_hd_flag, is_para_subch_hd_flag, ch_context_for_sentence, subch_context_for_sentence
+    tokenizer: tiktoken.Encoding,
     target_tokens: int = 200,
-    overlap_sentences: int = 2,
+    overlap_sentences: int = 2
 ) -> List[Tuple[str, str, Optional[str], Optional[str]]]:
-    """Create ~`target_tokens` chunks **with sentence overlap**.
+    # Output: chunk_text, first_marker, assigned_chapter_title_for_chunk, assigned_subchapter_title_for_chunk
 
-    Returns a list of tuples:
-        (chunk_text, first_marker, chapter_title, subchapter_title)
-    """
+    chunks = []
+    current_chunk_sentences = []
+    current_chunk_markers = []
+    # Titles assigned to the chunk currently being built. These are set from the first sentence of the chunk.
+    current_chunk_assigned_chapter_title: Optional[str] = None
+    current_chunk_assigned_sub_chapter_title: Optional[str] = None
+    current_token_count = 0
 
     if not structured_data:
-        logger.warning("chunk_structured_sentences: empty input -> empty output")
+        logger.warning("chunk_structured_sentences: No structured data, returning empty.")
         return []
 
-    chunks: list[Tuple[str, str, Optional[str], Optional[str]]] = []
+    logger.info(f"Token chunking (Target: ~{target_tokens}, Overlap: {overlap_sentences} sents), splitting on ch/subch context change.")
 
-    current_sentences: List[str] = []
-    current_markers: List[str] = []
-    assigned_chapter: Optional[str] = None
-    assigned_subchapter: Optional[str] = None
-    current_token_sum = 0
+    try:
+        sentence_texts = [item[0] for item in structured_data] # item[0] is sentence text
+        all_tokens = tokenizer.encode_batch(sentence_texts, allowed_special="all")
+        sentence_token_counts = [len(tokens) for tokens in all_tokens]
+    except Exception as e:
+        logger.error(f"Tiktoken encoding error: {e}", exc_info=True); return []
 
-    pending_ch_title: Optional[str] = None  # updated when we *see* a heading
-    pending_subch_title: Optional[str] = None
+    for i, (sentence, marker, _is_para_ch_hd, _is_para_subch_hd, # Heading flags not directly used in this version's boundary logic
+              sentence_ch_context, sentence_subch_context) in enumerate(structured_data):
+        
+        if i >= len(sentence_token_counts):
+            logger.warning(f"Data/token count mismatch at index {i}. Skipping."); continue
+        sentence_tokens = sentence_token_counts[i]
 
-    for sent, marker, is_ch_hd, is_subch_hd, ch_ctx, subch_ctx in structured_data:
-        sent = _clean(sent)
+        new_heading_boundary_detected = False
 
-        # detect heading rows
-        if is_ch_hd or is_subch_hd:
-            if is_ch_hd:
-                pending_ch_title = ch_ctx or DEFAULT_CHAPTER_TITLE_CHUNK
-                pending_subch_title = None  # reset sub‑chapter when new chapter starts
-            if is_subch_hd:
-                pending_subch_title = subch_ctx or DEFAULT_SUBCHAPTER_TITLE_CHUNK
-            # Skip adding heading text itself to content
-            continue
+        # If a chunk is being built, check if the current sentence starts a new context
+        if current_chunk_sentences:
+            # Effective chapter context for the current sentence (if None, use chunk's current chapter)
+            effective_sentence_ch_context = sentence_ch_context if sentence_ch_context is not None else current_chunk_assigned_chapter_title
+            
+            if effective_sentence_ch_context != current_chunk_assigned_chapter_title:
+                new_heading_boundary_detected = True
+                logger.debug(f"Boundary: Sentence '{marker}' ChContext '{effective_sentence_ch_context}' differs from ChunkCh '{current_chunk_assigned_chapter_title}'.")
+            # If chapter context is the same, check sub-chapter context
+            elif sentence_subch_context != current_chunk_assigned_sub_chapter_title: # None is different from "Some SubTitle"
+                new_heading_boundary_detected = True
+                logger.debug(f"Boundary: Sentence '{marker}' SubChContext '{sentence_subch_context}' differs from ChunkSubCh '{current_chunk_assigned_sub_chapter_title}' (Ch: '{effective_sentence_ch_context}').")
+        
+        # Finalize current chunk IF:
+        # 1. It's not empty AND a new heading context is detected for the current sentence.
+        # OR
+        # 2. It's not empty AND adding the current sentence would exceed the token limit.
+        if current_chunk_sentences and \
+           (new_heading_boundary_detected or (current_token_count + sentence_tokens > target_tokens)):
+            
+            chunk_text = " ".join(current_chunk_sentences)
+            first_marker = current_chunk_markers[0]
+            chunks.append((chunk_text, first_marker, current_chunk_assigned_chapter_title, current_chunk_assigned_sub_chapter_title))
+            logger.info(f"Created chunk (ending '{current_chunk_markers[-1]}'). Tokens: {current_token_count}. Reason: {'New Heading Context' if new_heading_boundary_detected else 'Token Limit'}. Ch: '{current_chunk_assigned_chapter_title}', SubCh: '{current_chunk_assigned_sub_chapter_title}'")
 
-        # first real sentence of a chunk → lock in titles
-        if not current_sentences:
-            assigned_chapter = pending_ch_title or ch_ctx or DEFAULT_CHAPTER_TITLE_CHUNK
-            assigned_subchapter = pending_subch_title or subch_ctx or DEFAULT_SUBCHAPTER_TITLE_CHUNK
+            # --- Prepare for the NEXT chunk ---
+            overlap_start_idx = max(0, len(current_chunk_sentences) - overlap_sentences)
+            sentences_for_overlap = current_chunk_sentences[overlap_start_idx:]
+            markers_for_overlap = current_chunk_markers[overlap_start_idx:]
+            
+            overlap_token_count = 0
+            start_original_idx_of_finalized_chunk = i - len(current_chunk_sentences) 
+            first_original_idx_for_overlap = start_original_idx_of_finalized_chunk + overlap_start_idx
+            for k_overlap in range(len(sentences_for_overlap)):
+                original_idx = first_original_idx_for_overlap + k_overlap
+                if original_idx >= 0 and original_idx < len(sentence_token_counts):
+                     overlap_token_count += sentence_token_counts[original_idx]
+            
+            current_chunk_sentences = sentences_for_overlap + [sentence]
+            current_chunk_markers = markers_for_overlap + [marker]
+            current_token_count = overlap_token_count + sentence_tokens
+            
+            # New chunk's assigned titles are from the current sentence's context that starts it
+            current_chunk_assigned_chapter_title = sentence_ch_context if sentence_ch_context is not None else DEFAULT_CHAPTER_TITLE_CHUNK
+            current_chunk_assigned_sub_chapter_title = sentence_subch_context
+            logger.debug(f"  Started new chunk with overlap. First effective sentence: '{sentence[:30]}...'. New chunk titles: Ch='{current_chunk_assigned_chapter_title}', SubCh='{current_chunk_assigned_sub_chapter_title}'")
+        else: 
+            # Add current sentence to the ongoing chunk
+            # If this is the very first sentence of the very first chunk, set the initial chunk titles
+            if not current_chunk_sentences:
+                current_chunk_assigned_chapter_title = sentence_ch_context if sentence_ch_context is not None else DEFAULT_CHAPTER_TITLE_CHUNK
+                current_chunk_assigned_sub_chapter_title = sentence_subch_context
+                logger.debug(f"  Starting first ever chunk. Titles set from sentence '{marker}': Ch='{current_chunk_assigned_chapter_title}', SubCh='{current_chunk_assigned_sub_chapter_title}'")
 
-        current_sentences.append(sent)
-        current_markers.append(marker)
-        current_token_sum += _word_tokens(sent)
+            current_chunk_sentences.append(sentence)
+            current_chunk_markers.append(marker)
+            current_token_count += sentence_tokens
 
-        # when token budget exceeded – close, overlap, reset
-        if current_token_sum >= target_tokens:
-            chunk_text = " ".join(current_sentences)
-            chunk_text = _strip_heading_from_text(chunk_text, assigned_chapter, assigned_subchapter)
-            chunks.append((chunk_text, current_markers[0] if current_markers else "", assigned_chapter, assigned_subchapter))
+    if current_chunk_sentences:
+        chunk_text = " ".join(current_chunk_sentences)
+        first_marker = current_chunk_markers[0]
+        # Titles for the last chunk are already set in current_chunk_assigned_...
+        chunks.append((chunk_text, first_marker, current_chunk_assigned_chapter_title, current_chunk_assigned_sub_chapter_title))
+        logger.info(f"Created final chunk. Tokens: {current_token_count}. Ch: '{current_chunk_assigned_chapter_title}', SubCh: '{current_chunk_assigned_sub_chapter_title}'")
 
-            # keep overlap sentences for next chunk
-            current_sentences = current_sentences[-overlap_sentences:]
-            current_markers = current_markers[-overlap_sentences:]
-            current_token_sum = sum(_word_tokens(s) for s in current_sentences)
-            # titles remain the same until new real sentence assigns again
-
-    # leftover sentences → final chunk
-    if current_sentences:
-        chunk_text = " ".join(current_sentences)
-        chunk_text = _strip_heading_from_text(chunk_text, assigned_chapter, assigned_subchapter)
-        chunks.append((chunk_text, current_markers[0] if current_markers else "", assigned_chapter, assigned_subchapter))
-
-    logger.info("chunk_structured_sentences: produced %d chunks", len(chunks))
+    logger.info(f"Token chunking (context change split) finished. Total chunks: {len(chunks)}.")
     return chunks
 
-
+# chunk_by_chapter - this version should work with the 6-tuple structure correctly
 def chunk_by_chapter(
-    structured_data: List[Tuple[str, str, bool, bool, Optional[str], Optional[str]]]
+    structured_data: List[Tuple[str, str, bool, bool, Optional[str], Optional[str]]] 
 ) -> List[Tuple[str, str, Optional[str], Optional[str]]]:
-    """Simpler mode: **one chunk per chapter** (ignores token limits)."""
+    chunks = []
+    current_chunk_sentences = []
+    current_chunk_markers = []
+    current_chapter_for_chunk: Optional[str] = None 
+    first_sub_chapter_in_current_chunk: Optional[str] = None
+    # The text of the paragraph that was identified as the current chapter's heading
+    active_chapter_heading_text_for_chunk: Optional[str] = None 
 
-    if not structured_data:
-        return []
+    if not structured_data: return []
+    logger.info("Starting chunking by chapter (using heading flags).")
 
-    chunks: list[Tuple[str, str, Optional[str], Optional[str]]] = []
-    current_sentences: list[str] = []
-    current_markers: list[str] = []
-    current_chapter: Optional[str] = None
-    current_subch: Optional[str] = None
+    for i, (sentence, marker, is_para_ch_hd, is_para_subch_hd, ch_context, subch_context) in enumerate(structured_data):
+        is_new_chapter_boundary = False
+        is_first_sentence_of_para = marker.endswith(".s0")
 
-    for sent, marker, is_ch_hd, is_subch_hd, ch_ctx, subch_ctx in structured_data:
-        sent = _clean(sent)
-
-        if is_ch_hd:  # new chapter begins – flush previous
-            if current_sentences:
-                chunks.append((" ".join(current_sentences), current_markers[0] if current_markers else "", current_chapter, current_subch))
-            current_sentences = []
-            current_markers = []
-            current_chapter = ch_ctx or DEFAULT_CHAPTER_TITLE_CHUNK
-            current_subch = None  # reset subchapter at new chapter
-            continue  # skip heading text itself
-
-        if is_subch_hd:
-            current_subch = subch_ctx or DEFAULT_SUBCHAPTER_TITLE_CHUNK
-            continue  # skip heading text
-
-        # normal sentence
-        if current_chapter is None:
-            current_chapter = ch_ctx or DEFAULT_CHAPTER_TITLE_CHUNK
-        current_sentences.append(sent)
-        current_markers.append(marker)
-
-    # flush remainder
-    if current_sentences:
-        chunks.append((" ".join(current_sentences), current_markers[0] if current_markers else "", current_chapter, current_subch))
-
-    logger.info("chunk_by_chapter: produced %d chapter‑chunks", len(chunks))
+        # A new chapter boundary is defined by the start of a paragraph that IS a chapter heading,
+        # and its text (ch_context) is different from the currently active chapter heading text.
+        if is_first_sentence_of_para and is_para_ch_hd:
+            if active_chapter_heading_text_for_chunk is None or ch_context != active_chapter_heading_text_for_chunk:
+                is_new_chapter_boundary = True
+        
+        if is_new_chapter_boundary:
+            if current_chunk_sentences: 
+                chunk_text = " ".join(current_chunk_sentences)
+                chunks.append((chunk_text, current_chunk_markers[0], 
+                               current_chapter_for_chunk if current_chapter_for_chunk else DEFAULT_CHAPTER_TITLE_CHUNK, 
+                               first_sub_chapter_in_current_chunk))
+            current_chunk_sentences, current_chunk_markers = [], []
+            current_chapter_for_chunk = ch_context # This IS the chapter title text
+            active_chapter_heading_text_for_chunk = ch_context
+            # If this chapter heading paragraph is ALSO a sub-chapter, use its text as the first sub-chapter
+            first_sub_chapter_in_current_chunk = subch_context if is_para_subch_hd else None
+        
+        if sentence: 
+            current_chunk_sentences.append(sentence)
+            current_chunk_markers.append(marker)
+            if current_chapter_for_chunk is None: # For first chunk if it doesn't start with a chapter heading para
+                current_chapter_for_chunk = ch_context if ch_context else DEFAULT_CHAPTER_TITLE_CHUNK
+            # If this is the first sentence of a sub-chapter paragraph within the current chapter context
+            if not first_sub_chapter_in_current_chunk and is_first_sentence_of_para and is_para_subch_hd:
+                if ch_context == active_chapter_heading_text_for_chunk: # Ensure it's under the current chapter
+                    first_sub_chapter_in_current_chunk = subch_context
+        
+    if current_chunk_sentences:
+        chunk_text = " ".join(current_chunk_sentences)
+        chunks.append((chunk_text, current_chunk_markers[0], 
+                       current_chapter_for_chunk if current_chapter_for_chunk else DEFAULT_CHAPTER_TITLE_CHUNK, 
+                       first_sub_chapter_in_current_chunk))
+    logger.info(f"Chunking by chapter finished. Total chunks: {len(chunks)}.")
     return chunks
-
-# -----------------------------------------------------------------------------
-# Newer DataFrame‑based API (used by CLI) – keeps all features
-# -----------------------------------------------------------------------------
-
-def _list_to_df(structured: List[Tuple[str, str, bool, bool, Optional[str], Optional[str]]]) -> pd.DataFrame:
-    cols = [
-        "sentence",
-        "marker",
-        "is_para_ch_hd",
-        "is_para_subch_hd",
-        "ch_context",
-        "subch_context",
-    ]
-    return pd.DataFrame(structured, columns=cols)
-
-
-def chunk_sentences_df(df: pd.DataFrame, max_words: int = 220, overlap_sentences: int = 2) -> pd.DataFrame:
-    """DataFrame‑centric version; used by CLI. Returns DF with 3 cols."""
-    tuples = chunk_structured_sentences(
-        df[[
-            "sentence",
-            "marker",
-            "is_para_ch_hd",
-            "is_para_subch_hd",
-            "ch_context",
-            "subch_context",
-        ]].itertuples(index=False, name=None),
-        target_tokens=max_words,
-        overlap_sentences=overlap_sentences,
-    )
-    return pd.DataFrame(tuples, columns=["Text Chunk", "Source Marker", "Detected Chapter", "Detected Sub-Chapter"])
-
-
-# -----------------------------------------------------------------------------
-# Repair function for already‑chunked CSVs
-# -----------------------------------------------------------------------------
-
-def repair_chunk_file(df: pd.DataFrame) -> pd.DataFrame:
-    """Remove headings that slipped into *Text Chunk*."""
-    required_cols = {"Text Chunk", "Detected Chapter", "Detected Sub-Chapter"}
-    if not required_cols.issubset(df.columns):
-        raise ValueError("repair_chunk_file expects a chunk‑level CSV with columns: " + ", ".join(required_cols))
-
-    df = df.copy()
-    for idx, row in df.iterrows():
-        df.at[idx, "Text Chunk"] = _strip_heading_from_text(
-            str(row["Text Chunk"]),
-            str(row.get("Detected Chapter", "")),
-            str(row.get("Detected Sub-Chapter", "")),
-        )
-    return df
-
-# -----------------------------------------------------------------------------
-# CLI driver
-# -----------------------------------------------------------------------------
-
-def _process_file(path: Path, args):
-    if args.repair_only:
-        df_in = pd.read_csv(path)
-        df_out = repair_chunk_file(df_in)
-        out_path = path.with_name(path.stem + "_clean.csv")
-    else:
-        # sentence‑level CSV expected
-        df_sent = pd.read_csv(path)
-        df_out = chunk_sentences_df(df_sent, max_words=args.max_words, overlap_sentences=args.overlap_sentences)
-        out_path = args.output_csv
-    df_out.to_csv(out_path, index=False, quoting=csv.QUOTE_MINIMAL)
-    print(f"✔ {path.name} → {out_path.name}  ({len(df_out):,} rows)")
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Sentence‑level chunker & chunk‑file repair tool (tiktoken‑free)",
-        formatter_class=argparse.RawTextHelpFormatter,
-    )
-    parser.add_argument("input_path", type=Path, help="Sentence CSV *or* chunk CSV *or* directory containing CSVs")
-    parser.add_argument("-o", "--output_csv", type=Path, default=Path("clean_chunks.csv"))
-    parser.add_argument("--max_words", type=int, default=220)
-    parser.add_argument("--overlap_sentences", type=int, default=2)
-    parser.add_argument("--repair_only", action="store_true", help="Just clean headings inside existing chunk CSV(s)")
-
-    args = parser.parse_args()
-
-    if args.input_path.is_dir():
-        csvs = list(args.input_path.glob("*.csv"))
-        if not csvs:
-            raise SystemExit("No *.csv files in the provided directory.")
-        for csv_file in csvs:
-            _process_file(csv_file, args)
-    else:
-        _process_file(args.input_path, args)
-
-
-if __name__ == "__main__":
-    main()
