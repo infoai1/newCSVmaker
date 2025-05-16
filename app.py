@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import io
 import logging
-from chunker import chunk_sentences, repair_chunk_file
 
 
 # --- Setup Logging and Helpers ---
