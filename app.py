@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 import logging
-import chunk_structured_sentences from chunker
+# The incorrect import that was here has been REMOVED.
 
 # --- Setup Logging and Helpers ---
 logging.basicConfig(
@@ -16,7 +16,7 @@ logger_app.debug("app.py: Logging configured at DEBUG level.")
 try:
     from utils import ensure_nltk_punkt, load_tokenizer
     from file_processor import extract_sentences_with_structure
-    from chunker import chunk_structured_sentences, chunk_by_chapter
+    from chunker import chunk_structured_sentences, chunk_by_chapter # This is the correct import
     
     fp_logger = logging.getLogger('file_processor')
     fp_logger.setLevel(logging.DEBUG) 
@@ -59,7 +59,7 @@ with st.sidebar:
     st.header("⚙️ Processing Options")
 
     uploaded_file_widget = st.file_uploader(
-        "1. Upload DOCX File", type=['docx'], accept_multiple_files=False, key="file_uploader_fs_cen" # Unique key
+        "1. Upload DOCX File", type=['docx'], accept_multiple_files=False, key="file_uploader_fs_cen" 
     )
 
     if uploaded_file_widget is not None:
@@ -103,7 +103,7 @@ if process_button:
 
     ch_heading_criteria = {
         'min_font_size': st.session_state.ch_min_font_size_fs_cen,
-        'alignment_centered': True, # Centered is now a mandatory part of the check
+        'alignment_centered': True, 
     }
     logger_app.debug(f"app.py: Chapter criteria: {ch_heading_criteria}")
 
@@ -111,7 +111,7 @@ if process_button:
     if st.session_state.sch_enable_detection_fs_cen:
         sch_heading_criteria = {
             'min_font_size': st.session_state.sch_min_font_size_fs_cen,
-            'alignment_centered': True, # Centered is now a mandatory part of the check
+            'alignment_centered': True, 
         }
     logger_app.debug(f"app.py: Sub-chapter criteria (enabled: {st.session_state.sch_enable_detection_fs_cen}): {sch_heading_criteria}")
 
@@ -170,7 +170,7 @@ if st.session_state.processed_data is not None:
         st.info(f"Total Chunks: {len(st.session_state.processed_data)}")
         try:
             csv_data = st.session_state.processed_data.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download CSV", csv_data, f"{st.session_state.processed_filename}_chunks.csv", 'text/csv', key="dl_btn_fs_cen") # Unique key
+            st.download_button("📥 Download CSV", csv_data, f"{st.session_state.processed_filename}_chunks.csv", 'text/csv', key="dl_btn_fs_cen") 
         except Exception as e:
             logger_app.error(f"Download prep error: {e}", exc_info=True)
             st.error(f"Failed to prepare download: {e}")
