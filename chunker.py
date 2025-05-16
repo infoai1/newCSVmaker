@@ -8,163 +8,162 @@ DEFAULT_CHAPTER_TITLE_CHUNK = "Introduction"
 DEFAULT_SUBCHAPTER_TITLE_CHUNK = None    
 
 def chunk_structured_sentences(
-    structured_data: List[Tuple[str, str, bool, bool, Optional[str], Optional[str]]], 
-    # sentence, marker, is_para_chapter_heading, is_para_subchapter_heading, 
-    # chapter_context_for_sentence, subchapter_context_for_sentence
+    structured_data: List[Tuple[str, str, Optional[str], Optional[str]]], 
+    # text_segment, marker, chapter_context, subchapter_context
     tokenizer: tiktoken.Encoding,
     target_tokens: int = 200,
-    overlap_sentences: int = 2
+    overlap_sentences: int = 2 # Note: overlap is now harder to define if a heading is a single segment
 ) -> List[Tuple[str, str, Optional[str], Optional[str]]]:
     # Output: chunk_text, first_marker, assigned_chapter_title_for_chunk, assigned_subchapter_title_for_chunk
 
     chunks = []
-    current_chunk_sentences = []
-    current_chunk_markers = []
-    current_chunk_assigned_chapter_title: Optional[str] = None
-    current_chunk_assigned_sub_chapter_title: Optional[str] = None
+    current_chunk_segments = [] # Stores (text_segment, marker, ch_ctx, subch_ctx) tuples
     current_token_count = 0
 
     if not structured_data:
         logger.warning("chunk_structured_sentences: No structured data, returning empty.")
         return []
 
-    logger.info(f"Token chunking (Target: ~{target_tokens}, Overlap: {overlap_sentences} sents), splitting strictly before new heading PARAGRAPHS.")
+    logger.info(f"Token chunking (Target: ~{target_tokens}, Overlap: {overlap_sentences} segments), splitting on context change from line-by-line processor.")
 
     try:
-        sentence_texts = [item[0] for item in structured_data]
-        all_tokens = tokenizer.encode_batch(sentence_texts, allowed_special="all")
-        sentence_token_counts = [len(tokens) for tokens in all_tokens]
+        segment_texts = [item[0] for item in structured_data]
+        all_tokens = tokenizer.encode_batch(segment_texts, allowed_special="all")
+        segment_token_counts = [len(tokens) for tokens in all_tokens]
     except Exception as e:
         logger.error(f"Tiktoken encoding error: {e}", exc_info=True); return []
 
-    for i, (sentence, marker, para_is_ch_heading, para_is_subch_heading, 
-              sentence_ch_context, sentence_subch_context) in enumerate(structured_data):
-        
-        if i >= len(sentence_token_counts):
+    for i, (text_segment, marker, segment_ch_context, segment_subch_context) in enumerate(structured_data):
+        if i >= len(segment_token_counts):
             logger.warning(f"Data/token count mismatch at index {i}. Skipping."); continue
-        sentence_tokens = sentence_token_counts[i]
-
-        new_heading_paragraph_starts_here = False
-        is_first_sentence_of_its_para = marker.endswith(".s0")
-
-        # If a chunk is already being built, check if this new sentence starts a new heading paragraph
-        if current_chunk_sentences and is_first_sentence_of_its_para:
-            # Check if the new paragraph is a chapter heading different from current chunk's chapter
-            if para_is_ch_heading: # The current sentence's paragraph IS a chapter heading
-                # sentence_ch_context will be the text of this chapter heading
-                if sentence_ch_context != current_chunk_assigned_chapter_title:
-                    new_heading_paragraph_starts_here = True
-                    logger.debug(f"CHUNK SPLIT Trigger: New CHAPTER para '{marker}' ('{sentence_ch_context[:30]}...'). Chunk was Ch: '{current_chunk_assigned_chapter_title}'.")
-            
-            # If not a new chapter, check if it's a new sub-chapter paragraph
-            elif para_is_subch_heading: # The current sentence's paragraph IS a sub-chapter heading
-                # sentence_subch_context will be the text of this sub-chapter heading
-                # Chapter context must be the same for it to be a sub-chapter under the current chapter
-                if (sentence_ch_context == current_chunk_assigned_chapter_title and \
-                    sentence_subch_context != current_chunk_assigned_sub_chapter_title):
-                    new_heading_paragraph_starts_here = True
-                    logger.debug(f"CHUNK SPLIT Trigger: New SUB-CHAPTER para '{marker}' ('{sentence_subch_context[:30]}...'). Chunk was Ch: '{current_chunk_assigned_chapter_title}', SubCh: '{current_chunk_assigned_sub_chapter_title}'.")
         
-        # Finalize current chunk IF:
-        # 1. It's not empty AND this sentence starts a new heading paragraph.
-        # OR
-        # 2. It's not empty AND adding the current sentence would exceed the token limit.
-        if current_chunk_sentences and \
-           (new_heading_paragraph_starts_here or (current_token_count + sentence_tokens > target_tokens)):
-            
-            chunk_text = " ".join(current_chunk_sentences)
-            first_marker = current_chunk_markers[0]
-            chunks.append((chunk_text, first_marker, current_chunk_assigned_chapter_title, current_chunk_assigned_sub_chapter_title))
-            logger.info(f"Created chunk (ending '{current_chunk_markers[-1]}'). Tokens: {current_token_count}. Reason: {'New Heading Paragraph' if new_heading_paragraph_starts_here else 'Token Limit'}. Ch: '{current_chunk_assigned_chapter_title}', SubCh: '{current_chunk_assigned_sub_chapter_title}'")
+        segment_tokens = segment_token_counts[i]
+        new_heading_context_detected = False
 
-            # --- Prepare for the NEXT chunk (which starts with the current `sentence`) ---
-            overlap_start_idx = max(0, len(current_chunk_sentences) - overlap_sentences)
-            sentences_for_overlap = current_chunk_sentences[overlap_start_idx:]
-            markers_for_overlap = current_chunk_markers[overlap_start_idx:]
+        # If a chunk is being built, check if the current segment starts a new context
+        if current_chunk_segments:
+            # Get context of the last segment added to the current chunk
+            _last_text, _last_marker, last_chunk_seg_ch_ctx, last_chunk_seg_subch_ctx = current_chunk_segments[-1]
+            
+            if segment_ch_context != last_chunk_seg_ch_ctx:
+                new_heading_context_detected = True
+                logger.debug(f"Boundary: Segment '{marker}' ChContext '{segment_ch_context}' differs from last segment's ChContext '{last_chunk_seg_ch_ctx}'.")
+            elif segment_subch_context != last_chunk_seg_subch_ctx: 
+                new_heading_context_detected = True
+                logger.debug(f"Boundary: Segment '{marker}' SubChContext '{segment_subch_context}' differs from last segment's SubChContext '{last_chunk_seg_subch_ctx}' (Ch: '{segment_ch_context}').")
+        
+        if current_chunk_segments and \
+           (new_heading_context_detected or (current_token_count + segment_tokens > target_tokens and len(current_chunk_segments) > 0)): # Ensure chunk has content before splitting by token limit
+            
+            # Finalize the current chunk
+            chunk_text_parts = [seg_data[0] for seg_data in current_chunk_segments]
+            # For line-by-line, a "sentence" is now a full line if it's a heading, or an NLTK sentence if body.
+            # Joining with space is generally okay.
+            chunk_text = " ".join(chunk_text_parts) 
+            first_marker_of_chunk = current_chunk_segments[0][1]
+            # Titles of the chunk are from the first segment of that chunk
+            ch_title_for_chunk = current_chunk_segments[0][2] 
+            subch_title_for_chunk = current_chunk_segments[0][3]
+
+            chunks.append((chunk_text, first_marker_of_chunk, ch_title_for_chunk, subch_title_for_chunk))
+            logger.info(f"Created chunk (ending '{current_chunk_segments[-1][1]}'). Segments: {len(current_chunk_segments)}, Tokens: {current_token_count}. Reason: {'New Heading Context' if new_heading_context_detected else 'Token Limit'}. Ch: '{ch_title_for_chunk}', SubCh: '{subch_title_for_chunk}'")
+
+            # --- Prepare for the NEXT chunk ---
+            # Overlap is now based on segments. If a heading is one segment, overlap might be tricky.
+            # For simplicity, overlap will take last N segments.
+            overlap_start_idx = max(0, len(current_chunk_segments) - overlap_sentences)
+            segments_for_overlap = current_chunk_segments[overlap_start_idx:]
             
             overlap_token_count = 0
-            start_original_idx_of_finalized_chunk = i - len(current_chunk_sentences) 
-            first_original_idx_for_overlap = start_original_idx_of_finalized_chunk + overlap_start_idx
-            for k_overlap in range(len(sentences_for_overlap)):
-                original_idx = first_original_idx_for_overlap + k_overlap
-                if original_idx >= 0 and original_idx < len(sentence_token_counts):
-                     overlap_token_count += sentence_token_counts[original_idx]
-            
-            current_chunk_sentences = sentences_for_overlap + [sentence]
-            current_chunk_markers = markers_for_overlap + [marker]
-            current_token_count = overlap_token_count + sentence_tokens
-            
-            # New chunk's assigned titles are from the current sentence's context (which is the heading itself if new_heading_paragraph_starts_here)
-            current_chunk_assigned_chapter_title = sentence_ch_context if sentence_ch_context is not None else DEFAULT_CHAPTER_TITLE_CHUNK
-            current_chunk_assigned_sub_chapter_title = sentence_subch_context
-            logger.debug(f"  Started new chunk. First effective sentence: '{marker}'-'{sentence[:30]}...'. New chunk titles: Ch='{current_chunk_assigned_chapter_title}', SubCh='{current_chunk_assigned_sub_chapter_title}'")
-        else: 
-            # Add current sentence to the ongoing chunk
-            # If this is the very first sentence of the very first chunk, set the initial chunk titles
-            if not current_chunk_sentences:
-                current_chunk_assigned_chapter_title = sentence_ch_context if sentence_ch_context is not None else DEFAULT_CHAPTER_TITLE_CHUNK
-                current_chunk_assigned_sub_chapter_title = sentence_subch_context
-                logger.debug(f"  Starting first ever chunk. Titles from sentence '{marker}': Ch='{current_chunk_assigned_chapter_title}', SubCh='{current_chunk_assigned_sub_chapter_title}'")
+            # To find original indices for token counts:
+            # `i` is index of current segment causing the split.
+            # `current_chunk_segments` were from indices before `i`.
+            start_original_idx_of_finalized_chunk_segments = i - len(current_chunk_segments)
+            first_original_idx_for_overlap_segments = start_original_idx_of_finalized_chunk_segments + overlap_start_idx
 
-            current_chunk_sentences.append(sentence)
-            current_chunk_markers.append(marker)
-            current_token_count += sentence_tokens
+            for k_overlap in range(len(segments_for_overlap)):
+                original_idx = first_original_idx_for_overlap_segments + k_overlap
+                if original_idx >=0 and original_idx < len(segment_token_counts):
+                    overlap_token_count += segment_token_counts[original_idx]
+
+            current_chunk_segments = segments_for_overlap + [(text_segment, marker, segment_ch_context, segment_subch_context)]
+            current_token_count = overlap_token_count + segment_tokens
+            
+            logger.debug(f"  Started new chunk with overlap. First segment: '{marker}'-'{text_segment[:30]}...'. New chunk context: Ch='{segment_ch_context}', SubCh='{segment_subch_context}'")
+        else: 
+            current_chunk_segments.append((text_segment, marker, segment_ch_context, segment_subch_context))
+            current_token_count += segment_tokens
 
     # Add the last remaining chunk
-    if current_chunk_sentences:
-        chunk_text = " ".join(current_chunk_sentences)
-        chunks.append((chunk_text, current_chunk_markers[0], current_chunk_assigned_chapter_title, current_chunk_assigned_sub_chapter_title))
-        logger.info(f"Created final chunk. Tokens: {current_token_count}. Ch: '{current_chunk_assigned_chapter_title}', SubCh: '{current_chunk_assigned_sub_chapter_title}'")
+    if current_chunk_segments:
+        chunk_text_parts = [seg_data[0] for seg_data in current_chunk_segments]
+        chunk_text = " ".join(chunk_text_parts)
+        first_marker_of_chunk = current_chunk_segments[0][1]
+        ch_title_for_chunk = current_chunk_segments[0][2]
+        subch_title_for_chunk = current_chunk_segments[0][3]
+        chunks.append((chunk_text, first_marker_of_chunk, ch_title_for_chunk, subch_title_for_chunk))
+        logger.info(f"Created final chunk. Segments: {len(current_chunk_segments)}. Tokens: {current_token_count}. Ch: '{ch_title_for_chunk}', SubCh: '{subch_title_for_chunk}'")
 
-    logger.info(f"Token chunking (paragraph heading split) finished. Total chunks: {len(chunks)}.")
+    logger.info(f"Token chunking (line-by-line context) finished. Total chunks: {len(chunks)}.")
     return chunks
 
-# chunk_by_chapter - this version uses the 6-tuple structure correctly
 def chunk_by_chapter(
-    structured_data: List[Tuple[str, str, bool, bool, Optional[str], Optional[str]]] 
+    structured_data: List[Tuple[str, str, Optional[str], Optional[str]]] 
+    # Expects: (text_segment, marker, chapter_context, subchapter_context) from line-by-line processor
 ) -> List[Tuple[str, str, Optional[str], Optional[str]]]:
     chunks = []
     current_chunk_sentences = []
     current_chunk_markers = []
     current_chapter_for_chunk: Optional[str] = None 
     first_sub_chapter_in_current_chunk: Optional[str] = None
-    active_chapter_heading_text_para: Optional[str] = None # Text of the para that IS the chapter heading
+    # Text of the heading that defined the current chapter context
+    active_chapter_heading_text: Optional[str] = None 
 
     if not structured_data: return []
-    logger.info("Starting chunking by chapter (based on paragraph heading flags).")
+    logger.info("Starting chunking by chapter (line-by-line processor input).")
 
-    for i, (sentence, marker, is_para_ch_hd, is_para_subch_hd, ch_context_of_sentence, subch_context_of_sentence) in enumerate(structured_data):
+    for i, (text_segment, marker, segment_ch_context, segment_subch_context) in enumerate(structured_data):
         is_new_chapter_boundary = False
-        is_first_sentence_of_para = marker.endswith(".s0")
-
-        if is_first_sentence_of_para and is_para_ch_hd:
-            if active_chapter_heading_text_para is None or ch_context_of_sentence != active_chapter_heading_text_para:
-                is_new_chapter_boundary = True
+        
+        # A new chapter boundary is if the segment_ch_context is new AND this segment IS a chapter heading
+        # How to know if segment IS a chapter heading? The line-by-line processor makes segment_ch_context
+        # BE the heading text if that line was a chapter.
+        if segment_ch_context is not None and segment_ch_context != DEFAULT_CHAPTER_TITLE_FALLBACK: # A "real" chapter title
+            if active_chapter_heading_text is None or segment_ch_context != active_chapter_heading_text:
+                # Additional check: is this text_segment itself the ch_context?
+                # This implies it's the heading line itself.
+                if text_segment == segment_ch_context:
+                    is_new_chapter_boundary = True
         
         if is_new_chapter_boundary:
             if current_chunk_sentences: 
                 chunk_text = " ".join(current_chunk_sentences)
                 chunks.append((chunk_text, current_chunk_markers[0], 
-                               current_chapter_for_chunk if current_chapter_for_chunk else DEFAULT_CHAPTER_TITLE_CHUNK, 
+                               current_chapter_for_chunk if current_chapter_for_chunk else DEFAULT_CHAPTER_TITLE_FALLBACK, 
                                first_sub_chapter_in_current_chunk))
             current_chunk_sentences, current_chunk_markers = [], []
-            current_chapter_for_chunk = ch_context_of_sentence 
-            active_chapter_heading_text_para = ch_context_of_sentence
-            first_sub_chapter_in_current_chunk = subch_context_of_sentence if is_para_subch_hd else None
+            current_chapter_for_chunk = segment_ch_context 
+            active_chapter_heading_text = segment_ch_context
+            # If this new chapter line is also a sub-chapter (unlikely but possible), set it.
+            # Otherwise, reset sub-chapter.
+            first_sub_chapter_in_current_chunk = segment_subch_context if text_segment == segment_subch_context else None
         
-        if sentence: 
-            current_chunk_sentences.append(sentence)
+        if text_segment: 
+            current_chunk_sentences.append(text_segment)
             current_chunk_markers.append(marker)
             if current_chapter_for_chunk is None: 
-                current_chapter_for_chunk = ch_context_of_sentence if ch_context_of_sentence else DEFAULT_CHAPTER_TITLE_CHUNK
-            if not first_sub_chapter_in_current_chunk and is_first_sentence_of_para and is_para_subch_hd:
-                if ch_context_of_sentence == active_chapter_heading_text_para: 
-                    first_sub_chapter_in_current_chunk = subch_context_of_sentence
+                current_chapter_for_chunk = segment_ch_context if segment_ch_context else DEFAULT_CHAPTER_TITLE_FALLBACK
+            
+            # Capture the first sub-chapter context encountered within this chapter block
+            if not first_sub_chapter_in_current_chunk and segment_subch_context is not None and segment_subch_context != DEFAULT_SUBCHAPTER_TITLE_FALLBACK:
+                 # Check if this segment IS the sub-chapter heading text
+                if text_segment == segment_subch_context:
+                    first_sub_chapter_in_current_chunk = segment_subch_context
         
     if current_chunk_sentences:
         chunk_text = " ".join(current_chunk_sentences)
         chunks.append((chunk_text, current_chunk_markers[0], 
-                       current_chapter_for_chunk if current_chapter_for_chunk else DEFAULT_CHAPTER_TITLE_CHUNK, 
+                       current_chapter_for_chunk if current_chapter_for_chunk else DEFAULT_CHAPTER_TITLE_FALLBACK, 
                        first_sub_chapter_in_current_chunk))
     logger.info(f"Chunking by chapter finished. Total chunks: {len(chunks)}.")
     return chunks
